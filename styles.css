@@ -32,7 +32,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -163,6 +164,20 @@ h2 {
   background: var(--surface-soft);
 }
 
+.secondary-action:disabled,
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.visually-hidden-file {
+  position: absolute;
+  width: 1px;
+  min-height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .config-toggle {
   display: none;
   align-items: center;
@@ -290,6 +305,134 @@ h2 {
   max-width: 520px;
 }
 
+.natural-fill-dock {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+  pointer-events: none;
+}
+
+.natural-fill-dock > * {
+  pointer-events: auto;
+}
+
+.natural-fill-launcher {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 62px;
+  height: 62px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #6b8dff 0%, #155df5 78%);
+  color: transparent;
+  box-shadow: 0 12px 24px rgba(21, 93, 245, 0.3);
+  font-size: 0;
+  line-height: 0;
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.natural-fill-launcher:hover {
+  background: linear-gradient(145deg, #7596ff 0%, #0f50df 78%);
+  box-shadow: 0 15px 30px rgba(21, 93, 245, 0.36);
+  transform: translateY(-2px);
+}
+
+.natural-fill-launcher:focus-visible {
+  outline: 3px solid rgba(21, 93, 245, 0.28);
+  outline-offset: 4px;
+}
+
+.natural-fill-launcher:disabled {
+  cursor: wait;
+  opacity: 0.72;
+  transform: none;
+}
+
+.natural-fill-launcher::before {
+  width: 33px;
+  height: 26px;
+  border-radius: 7px 7px 7px 3px;
+  background:
+    radial-gradient(circle at 9px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    radial-gradient(circle at 16.5px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    radial-gradient(circle at 24px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    #fff;
+  box-shadow: inset 0 -1px 0 rgba(21, 93, 245, 0.14);
+  content: "";
+}
+
+.natural-fill-launcher::after {
+  position: absolute;
+  left: calc(50% - 12px);
+  top: calc(50% + 8px);
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  content: "";
+}
+
+.natural-fill-launcher.is-loading::before {
+  animation: natural-fill-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes natural-fill-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(0.9);
+  }
+}
+
+.natural-fill-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(640px, calc(100vh - 104px));
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 22px 64px rgba(31, 42, 40, 0.16);
+}
+
+.natural-fill-prompt {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.natural-fill-panel label {
+  max-width: none;
+}
+
+.natural-fill-panel textarea {
+  min-height: 118px;
+}
+
+.natural-fill-panel[hidden] {
+  display: none;
+}
+
+.natural-fill-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .document-name-panel {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(160px, 240px);
@@ -396,7 +539,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 40px;
   border: 1px solid var(--line-strong);
@@ -408,8 +552,16 @@ select {
   outline: none;
 }
 
+textarea {
+  min-height: 96px;
+  padding: 10px 11px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
 }
@@ -598,8 +750,10 @@ input[readonly] {
 
 .status {
   position: fixed;
-  right: 18px;
+  right: auto;
   bottom: 18px;
+  left: 18px;
+  z-index: 50;
   width: calc(100% - 36px);
   max-width: 420px;
   padding: 12px 14px;
@@ -708,6 +862,51 @@ input[readonly] {
     grid-template-columns: 1fr;
   }
 
+  .natural-fill-dock {
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    left: auto;
+    justify-items: end;
+  }
+
+  .natural-fill-panel {
+    width: min(330px, calc(100vw - 72px));
+  }
+
+  .natural-fill-launcher {
+    width: 54px;
+    height: 54px;
+  }
+
+  .natural-fill-panel {
+    min-height: min(330px, calc(100dvh - 220px));
+    max-height: min(680px, calc(100dvh - 86px));
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .natural-fill-prompt {
+    margin: 0 0 4px;
+    line-height: 1.45;
+  }
+
+  .natural-fill-panel label {
+    gap: 4px;
+  }
+
+  .natural-fill-panel textarea {
+    min-height: 148px;
+  }
+
+  .natural-fill-actions {
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .natural-fill-actions > * {
+    width: 100%;
+  }
+
   .draft-actions,
   .draft-actions > *,
   .draft-chip {
@@ -791,8 +990,14 @@ input[readonly] {
   }
 
   .status {
-    right: 10px;
-    bottom: 10px;
+    top: 10px;
+    bottom: auto;
+    left: 10px;
     max-width: calc(100% - 20px);
+    transform: translateY(calc(-100% - 16px));
+  }
+
+  .status.is-visible {
+    transform: translateY(0);
   }
 }

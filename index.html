@@ -40,7 +40,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -171,6 +172,20 @@ h2 {
   background: var(--surface-soft);
 }
 
+.secondary-action:disabled,
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.visually-hidden-file {
+  position: absolute;
+  width: 1px;
+  min-height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .config-toggle {
   display: none;
   align-items: center;
@@ -298,6 +313,134 @@ h2 {
   max-width: 520px;
 }
 
+.natural-fill-dock {
+  position: fixed;
+  right: max(18px, env(safe-area-inset-right));
+  bottom: max(18px, env(safe-area-inset-bottom));
+  z-index: 40;
+  display: grid;
+  gap: 12px;
+  justify-items: end;
+  pointer-events: none;
+}
+
+.natural-fill-dock > * {
+  pointer-events: auto;
+}
+
+.natural-fill-launcher {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 62px;
+  height: 62px;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #6b8dff 0%, #155df5 78%);
+  color: transparent;
+  box-shadow: 0 12px 24px rgba(21, 93, 245, 0.3);
+  font-size: 0;
+  line-height: 0;
+  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.natural-fill-launcher:hover {
+  background: linear-gradient(145deg, #7596ff 0%, #0f50df 78%);
+  box-shadow: 0 15px 30px rgba(21, 93, 245, 0.36);
+  transform: translateY(-2px);
+}
+
+.natural-fill-launcher:focus-visible {
+  outline: 3px solid rgba(21, 93, 245, 0.28);
+  outline-offset: 4px;
+}
+
+.natural-fill-launcher:disabled {
+  cursor: wait;
+  opacity: 0.72;
+  transform: none;
+}
+
+.natural-fill-launcher::before {
+  width: 33px;
+  height: 26px;
+  border-radius: 7px 7px 7px 3px;
+  background:
+    radial-gradient(circle at 9px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    radial-gradient(circle at 16.5px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    radial-gradient(circle at 24px 11px, #2f6cf6 0 2.5px, transparent 3px),
+    #fff;
+  box-shadow: inset 0 -1px 0 rgba(21, 93, 245, 0.14);
+  content: "";
+}
+
+.natural-fill-launcher::after {
+  position: absolute;
+  left: calc(50% - 12px);
+  top: calc(50% + 8px);
+  width: 9px;
+  height: 9px;
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+  content: "";
+}
+
+.natural-fill-launcher.is-loading::before {
+  animation: natural-fill-pulse 0.9s ease-in-out infinite;
+}
+
+@keyframes natural-fill-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(0.9);
+  }
+}
+
+.natural-fill-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(640px, calc(100vh - 104px));
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 22px 64px rgba(31, 42, 40, 0.16);
+}
+
+.natural-fill-prompt {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.natural-fill-panel label {
+  max-width: none;
+}
+
+.natural-fill-panel textarea {
+  min-height: 118px;
+}
+
+.natural-fill-panel[hidden] {
+  display: none;
+}
+
+.natural-fill-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .document-name-panel {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(160px, 240px);
@@ -404,7 +547,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 40px;
   border: 1px solid var(--line-strong);
@@ -416,8 +560,16 @@ select {
   outline: none;
 }
 
+textarea {
+  min-height: 96px;
+  padding: 10px 11px;
+  line-height: 1.5;
+  resize: vertical;
+}
+
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
 }
@@ -606,8 +758,10 @@ input[readonly] {
 
 .status {
   position: fixed;
-  right: 18px;
+  right: auto;
   bottom: 18px;
+  left: 18px;
+  z-index: 50;
   width: calc(100% - 36px);
   max-width: 420px;
   padding: 12px 14px;
@@ -716,6 +870,51 @@ input[readonly] {
     grid-template-columns: 1fr;
   }
 
+  .natural-fill-dock {
+    right: max(16px, env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    left: auto;
+    justify-items: end;
+  }
+
+  .natural-fill-panel {
+    width: min(330px, calc(100vw - 72px));
+  }
+
+  .natural-fill-launcher {
+    width: 54px;
+    height: 54px;
+  }
+
+  .natural-fill-panel {
+    min-height: min(330px, calc(100dvh - 220px));
+    max-height: min(680px, calc(100dvh - 86px));
+    padding: 14px;
+    gap: 10px;
+  }
+
+  .natural-fill-prompt {
+    margin: 0 0 4px;
+    line-height: 1.45;
+  }
+
+  .natural-fill-panel label {
+    gap: 4px;
+  }
+
+  .natural-fill-panel textarea {
+    min-height: 148px;
+  }
+
+  .natural-fill-actions {
+    flex-direction: column-reverse;
+    gap: 8px;
+  }
+
+  .natural-fill-actions > * {
+    width: 100%;
+  }
+
   .draft-actions,
   .draft-actions > *,
   .draft-chip {
@@ -799,9 +998,15 @@ input[readonly] {
   }
 
   .status {
-    right: 10px;
-    bottom: 10px;
+    top: 10px;
+    bottom: auto;
+    left: 10px;
     max-width: calc(100% - 20px);
+    transform: translateY(calc(-100% - 16px));
+  }
+
+  .status.is-visible {
+    transform: translateY(0);
   }
 }
     </style>
@@ -864,6 +1069,20 @@ input[readonly] {
         </section>
       </section>
 
+      <div class="natural-fill-dock" id="naturalFillDock">
+        <div class="natural-fill-panel" id="naturalFillPanel" role="dialog" aria-modal="false" aria-labelledby="naturalFillTitle" hidden>
+          <p class="natural-fill-prompt" id="naturalFillTitle">聪明的林峰说到：你可以告诉我窗帘的型号、安装位置等，我会帮你处理好表格</p>
+          <label>描述内容
+            <textarea id="naturalFillText" rows="4" placeholder="例如：客厅型号 A，宽 3.2 高 2.6，轨道 2 条单价 50"></textarea>
+          </label>
+          <div class="natural-fill-actions">
+            <button class="secondary-action" id="naturalFillCancelBtn" type="button">取消</button>
+            <button class="primary-action" id="naturalFillSubmitBtn" type="button">填入表格</button>
+          </div>
+        </div>
+        <button class="natural-fill-launcher" id="naturalFillBtn" type="button" aria-label="智能填写" title="智能填写" aria-expanded="false" aria-controls="naturalFillPanel">智能填写</button>
+      </div>
+
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <noscript>
         <div class="status status-static is-error">当前浏览器未启用 JavaScript，无法显示表格内容。</div>
@@ -922,6 +1141,7 @@ input[readonly] {
   const XML_NS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
   const ZIP_EPOCH = new Date("1980-01-01T00:00:00Z");
   const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
+  const NATURAL_FILL_ENDPOINT = "/api/agent-skills/doubao-excel-natural-fill/extract";
   const IMAGE_CELL_WIDTH_PX = 132;
   const IMAGE_CELL_HEIGHT_PX = 96;
   const IMAGE_CELL_PADDING_PX = 6;
@@ -947,6 +1167,7 @@ input[readonly] {
     activeDraftId: "",
     draftReady: false,
     draftStorageAvailable: false,
+    naturalFillRunning: false,
   };
 
   let els = {};
@@ -1431,6 +1652,11 @@ input[readonly] {
       addRowBottomBtn: document.getElementById("addRowBottomBtn"),
       addCustomRowBottomBtn: document.getElementById("addCustomRowBottomBtn"),
       clearRowsBtn: document.getElementById("clearRowsBtn"),
+      naturalFillBtn: document.getElementById("naturalFillBtn"),
+      naturalFillPanel: document.getElementById("naturalFillPanel"),
+      naturalFillText: document.getElementById("naturalFillText"),
+      naturalFillSubmitBtn: document.getElementById("naturalFillSubmitBtn"),
+      naturalFillCancelBtn: document.getElementById("naturalFillCancelBtn"),
       rowList: document.getElementById("rowList"),
       status: document.getElementById("status"),
       sharedRemarkPanel: document.getElementById("sharedRemarkPanel"),
@@ -1459,6 +1685,11 @@ input[readonly] {
     els.addCustomRowBottomBtn.addEventListener("click", () => addCustomRow());
     els.clearRowsBtn.addEventListener("click", clearRows);
     els.generateBtn.addEventListener("click", generateExcel);
+    els.naturalFillBtn.addEventListener("click", openNaturalFillPanel);
+    els.naturalFillSubmitBtn.addEventListener("click", handleNaturalFillSubmit);
+    els.naturalFillCancelBtn.addEventListener("click", closeNaturalFillPanel);
+    els.naturalFillText.addEventListener("keydown", handleNaturalFillTextKeydown);
+    document.addEventListener("keydown", handleDocumentKeydown);
     els.fieldList.addEventListener("input", handleFieldInput);
     els.fieldList.addEventListener("change", handleFieldChange);
     els.fieldList.addEventListener("click", handleFieldClick);
@@ -1491,6 +1722,7 @@ input[readonly] {
     renderSharedRemark();
     renderRows();
     updateConfigPanel();
+    updateNaturalFillControls();
     updateSummary();
   }
 
@@ -1512,6 +1744,29 @@ input[readonly] {
   function toggleConfigPanel() {
     state.configOpen = !state.configOpen;
     updateConfigPanel();
+  }
+
+  function updateNaturalFillControls() {
+    if (!els.naturalFillBtn) {
+      return;
+    }
+
+    const isOpen = !els.naturalFillPanel.hidden;
+    els.naturalFillBtn.disabled = state.naturalFillRunning;
+    els.naturalFillBtn.classList.toggle("is-loading", state.naturalFillRunning);
+    els.naturalFillBtn.setAttribute("aria-expanded", String(isOpen));
+    els.naturalFillBtn.setAttribute("aria-label", state.naturalFillRunning ? "智能填写中" : "智能填写");
+    els.naturalFillBtn.title = state.naturalFillRunning ? "智能填写中" : "智能填写";
+    if (els.naturalFillText) {
+      els.naturalFillText.disabled = state.naturalFillRunning;
+    }
+    if (els.naturalFillSubmitBtn) {
+      els.naturalFillSubmitBtn.disabled = state.naturalFillRunning;
+      els.naturalFillSubmitBtn.textContent = state.naturalFillRunning ? "正在填入..." : "填入表格";
+    }
+    if (els.naturalFillCancelBtn) {
+      els.naturalFillCancelBtn.disabled = state.naturalFillRunning;
+    }
   }
 
   function renderDraftPanel() {
@@ -2288,6 +2543,282 @@ input[readonly] {
     renderDraftPanel();
     scheduleDraftSave();
     setStatus("已清空数据行", "success");
+  }
+
+  function openNaturalFillPanel() {
+    if (state.naturalFillRunning) {
+      return;
+    }
+
+    if (!state.fields.length) {
+      setStatus("请先添加表头", "warning");
+      return;
+    }
+
+    const extractableFields = getNaturalFillFields();
+    if (!extractableFields.length) {
+      setStatus("没有可智能填充的文本或数字表头", "warning");
+      return;
+    }
+
+    els.naturalFillPanel.hidden = false;
+    updateNaturalFillControls();
+    els.naturalFillText.focus();
+  }
+
+  function closeNaturalFillPanel() {
+    if (state.naturalFillRunning) {
+      return;
+    }
+
+    els.naturalFillPanel.hidden = true;
+    updateNaturalFillControls();
+  }
+
+  function handleNaturalFillTextKeydown(event) {
+    if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      event.preventDefault();
+      handleNaturalFillSubmit();
+    }
+  }
+
+  function handleDocumentKeydown(event) {
+    if (event.key === "Escape" && els.naturalFillPanel && !els.naturalFillPanel.hidden) {
+      closeNaturalFillPanel();
+    }
+  }
+
+  async function handleNaturalFillSubmit() {
+    if (state.naturalFillRunning) {
+      return;
+    }
+
+    const text = String(els.naturalFillText.value || "").trim();
+    if (!text) {
+      setStatus("请输入要填入表格的自然语言内容", "warning");
+      els.naturalFillText.focus();
+      return;
+    }
+
+    if (!state.fields.length) {
+      setStatus("请先添加表头", "warning");
+      return;
+    }
+
+    const fields = getNaturalFillFields();
+    if (!fields.length) {
+      setStatus("没有可智能填充的文本或数字表头", "warning");
+      return;
+    }
+
+    state.naturalFillRunning = true;
+    updateNaturalFillControls();
+    setStatus("正在根据描述填写表格...", "success");
+
+    try {
+      const result = await requestNaturalFillExtraction(text, fields);
+      const addedCount = appendNaturalFillRows(result.rows || []);
+      if (!addedCount) {
+        setStatus("未解析到可填写的数据", "warning");
+        return;
+      }
+
+      renderRows();
+      renderDraftPanel();
+      scheduleDraftSave();
+      els.naturalFillText.value = "";
+      closeNaturalFillPanel();
+      setStatus(`已智能填入 ${addedCount} 行`, result.warnings && result.warnings.length ? "warning" : "success");
+    } catch (error) {
+      setStatus(`智能填行失败：${error.message || "请稍后重试"}`, "error");
+    } finally {
+      state.naturalFillRunning = false;
+      updateNaturalFillControls();
+    }
+  }
+
+  function getNaturalFillFields() {
+    return state.fields
+      .filter((field) => field.type !== "image" && !isRemarkField(field))
+      .map((field) => ({
+        key: field.key,
+        label: field.label,
+        group: field.group,
+        type: field.type,
+        options: field.options,
+        required: field.required,
+      }));
+  }
+
+  async function requestNaturalFillExtraction(text, fields) {
+    const body = JSON.stringify({ text, fields });
+    let response;
+    try {
+      response = await fetch(NATURAL_FILL_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+    } catch (error) {
+      response = await fetchLocalNaturalFillEndpoint(body, error);
+    }
+
+    if (response.status === 404 && shouldTryLocalNaturalFillEndpoint()) {
+      response = await fetchLocalNaturalFillEndpoint(body);
+    }
+
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+
+    if (!response.ok) {
+      throw new Error((payload && payload.error) || getNaturalFillHttpError(response.status));
+    }
+
+    if (!payload || !Array.isArray(payload.rows)) {
+      throw new Error("智能填行服务返回格式不正确");
+    }
+
+    return payload;
+  }
+
+  async function fetchLocalNaturalFillEndpoint(body, originalError) {
+    if (!shouldTryLocalNaturalFillEndpoint()) {
+      throw new Error(getNaturalFillConnectionError(originalError));
+    }
+
+    try {
+      return await fetch(`${getNaturalFillFallbackOrigin()}${NATURAL_FILL_ENDPOINT}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+    } catch (error) {
+      throw new Error(getNaturalFillConnectionError(originalError || error));
+    }
+  }
+
+  function shouldTryLocalNaturalFillEndpoint() {
+    if (!root.location) {
+      return false;
+    }
+
+    const host = root.location.host;
+    return root.location.protocol === "file:" || (host && host !== "127.0.0.1:4173" && host !== "localhost:4173");
+  }
+
+  function getNaturalFillFallbackOrigin() {
+    if (!root.location || root.location.protocol === "file:") {
+      return "http://127.0.0.1:4173";
+    }
+
+    const hostname = root.location.hostname || "127.0.0.1";
+    return `http://${hostname}:4173`;
+  }
+
+  function getNaturalFillConnectionError(error) {
+    if (root.location && root.location.protocol === "file:") {
+      return "请先启动本地服务 node server.js，并通过服务启动后显示的地址打开页面";
+    }
+
+    return `无法连接智能填行服务，请确认电脑端已运行 node server.js，并用服务启动后显示的地址打开页面（${error.message || "网络错误"}）`;
+  }
+
+  function getNaturalFillHttpError(status) {
+    if (status === 404) {
+      return "当前页面不是由智能填行服务打开，请使用服务启动后显示的地址访问后再智能填行";
+    }
+
+    return `本地智能填行服务返回 ${status}`;
+  }
+
+  function appendNaturalFillRows(rows) {
+    const fieldsByKey = new Map(state.fields.map((field) => [field.key, field]));
+    const sharedRemarkField = getSharedRemarkField(state.fields);
+    const calculatedFields = getCalculatedFields(state.fields);
+    const rowsToAdd = [];
+
+    rows.forEach((item) => {
+      const sourceValues = item && item.values && typeof item.values === "object" ? item.values : {};
+      const row = createNormalRow();
+      const values = getRowValues(row);
+      let hasValue = false;
+
+      Object.keys(sourceValues).forEach((key) => {
+        const field = fieldsByKey.get(key);
+        if (!field || field.type === "image" || (sharedRemarkField && field.key === sharedRemarkField.key)) {
+          return;
+        }
+
+        const value = normalizeNaturalFillValue(sourceValues[key], field);
+        if (value === "") {
+          return;
+        }
+
+        values[field.key] = value;
+        hasValue = true;
+      });
+
+      if (!hasValue) {
+        return;
+      }
+
+      if (sharedRemarkField) {
+        values[sharedRemarkField.key] = state.sharedRemark;
+      }
+      syncCalculatedRow(row, calculatedFields);
+      rowsToAdd.push(row);
+    });
+
+    if (rowsToAdd.length) {
+      if (state.rows.length === 1 && isEmptyNormalRow(state.rows[0])) {
+        state.rows = [];
+      }
+      state.rows.push(...rowsToAdd);
+      ensureSharedRemarkState();
+    }
+
+    return rowsToAdd.length;
+  }
+
+  function isEmptyNormalRow(row) {
+    if (!row || isCustomRow(row)) {
+      return false;
+    }
+
+    const values = getRowValues(row);
+    return Object.keys(values).every((key) => String(values[key] == null ? "" : values[key]).trim() === "");
+  }
+
+  function normalizeNaturalFillValue(value, field) {
+    const text = String(value == null ? "" : value).trim();
+    if (!text) {
+      return "";
+    }
+
+    if (field.type === "number") {
+      const cleaned = text.replace(/,/g, "").replace(/[^\d.]/g, "");
+      return cleaned ? normalizeNonNegativeNumberValue(cleaned) : "";
+    }
+
+    if (field.type === "select" && field.options.length) {
+      const exact = field.options.find((option) => option === text);
+      if (exact) {
+        return exact;
+      }
+      const normalizedText = normalizeLabel(text);
+      const fuzzy = field.options.find((option) => normalizeLabel(option) === normalizedText);
+      return fuzzy || text;
+    }
+
+    return text;
   }
 
   async function generateExcel() {
@@ -3491,10 +4022,11 @@ ${drawing}\
     });
   }
 })();
-
     </script>
   </body>
 </html>
+
+
 
 
 
