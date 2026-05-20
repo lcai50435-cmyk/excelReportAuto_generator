@@ -56,10 +56,19 @@
   const IMAGE_CELL_PADDING_PX = 6;
   const EMU_PER_PIXEL = 9525;
   const CALCULATED_STYLE_ID = 5;
+  const CENTER_TEXT_STYLE_ID = 7;
   const CUSTOM_TEXT_STYLE_ID = 8;
   const CUSTOM_DATE_STYLE_ID = 9;
   const CUSTOM_NUMBER_STYLE_ID = 10;
   const CUSTOM_CALCULATED_STYLE_ID = 11;
+  const CENTER_DATE_STYLE_ID = 12;
+  const CENTER_NUMBER_STYLE_ID = 13;
+  const CALCULATION_OPERATORS = ["add", "subtract", "multiply", "divide"];
+  const CALCULATION_TYPE_OPERATORS = {
+    sum: "add",
+    meterAmount: "multiply",
+    quantityAmount: "multiply",
+  };
   const EXPORT_NOTICE_TEXT = "\u6e29\u99a8\u63d0\u793a\uff1a1\uff1a\u7a97\u5e18\u4e3a\u5b9a\u5236\u4ea7\u54c1\uff0c\u82e5\u65e0\u8d28\u91cf\u95ee\u9898\u4e0d\u4e88\u9000\u6362\u30022\uff1a\u9762\u6599\u5899\u7eb8\u8272\u5dee\u5141\u8bb8\u5728\u56fd\u5bb6\u89c4\u5b9a\u8272\u5dee\u5141\u8bb85%\u4e4b\u5185\u3002\uff08\u5ba3\u745e\u8f6f\u88c5 \u9648\u59d0\uff1a13688428383\uff09";
 
   let state = {
@@ -71,6 +80,7 @@
     invalidCells: new Set(),
     invalidSharedFields: new Set(),
     invalidFields: new Set(),
+    calculationRules: [],
     configOpen: false,
     drafts: [],
     activeDraftId: "",
@@ -122,6 +132,32 @@
       });
 
     return normalized.length ? normalized : DEFAULT_FIELDS.map(cloneField);
+  }
+
+  function normalizeCalculationRules(rules, fields) {
+    const targetFields = fields || state.fields;
+    const fieldKeys = new Set((targetFields || []).map((field) => field.key));
+    return (Array.isArray(rules) ? rules : [])
+      .map((rule) => {
+        if (!rule || typeof rule !== "object") {
+          return null;
+        }
+
+        const targetKey = String(rule.targetKey || "").trim();
+        const sourceKeys = Array.isArray(rule.sourceKeys)
+          ? rule.sourceKeys.map((key) => String(key || "").trim()).filter(Boolean)
+          : [];
+        const operator = CALCULATION_OPERATORS.includes(rule.operator) ? rule.operator : "";
+        if (!fieldKeys.has(targetKey) || sourceKeys.length !== 2 || !operator) {
+          return null;
+        }
+        if (!sourceKeys.every((key) => fieldKeys.has(key)) || sourceKeys.includes(targetKey)) {
+          return null;
+        }
+
+        return { targetKey, sourceKeys, operator };
+      })
+      .filter(Boolean);
   }
 
   function loadFields() {
@@ -251,6 +287,7 @@
     const documentName = String(draft.documentName || "");
     const depositAmount = normalizeNonNegativeNumberValue(draft.depositAmount || "");
     const updatedAt = Number.isFinite(Number(draft.updatedAt)) ? Number(draft.updatedAt) : Date.now();
+    const calculationRules = normalizeCalculationRules(draft.calculationRules, fields);
 
     return {
       id: String(draft.id || makeDraftId()),
@@ -261,6 +298,7 @@
       sharedRemark: String(draft.sharedRemark || ""),
       fields,
       rows,
+      calculationRules,
       version: Number(draft.version) || DRAFT_VERSION,
     };
   }
@@ -277,6 +315,7 @@
     const documentName = String(state.documentName || "");
     const depositAmount = normalizeNonNegativeNumberValue(state.depositAmount || "");
     const updatedAt = Date.now();
+    const calculationRules = normalizeCalculationRules(state.calculationRules, fields);
 
     return {
       id: state.activeDraftId || makeDraftId(),
@@ -287,6 +326,7 @@
       sharedRemark: String(state.sharedRemark || ""),
       fields,
       rows,
+      calculationRules,
       version: DRAFT_VERSION,
     };
   }
@@ -328,9 +368,9 @@
     state.sharedRemark = normalizedDraft.sharedRemark;
     state.fields = normalizedDraft.fields;
     state.rows = normalizedDraft.rows.length ? normalizedDraft.rows : [createEmptyRow()];
+    state.calculationRules = normalizedDraft.calculationRules;
     clearValidationState();
     ensureSharedRemarkState();
-    saveFields();
     return true;
   }
 
@@ -399,6 +439,8 @@
     state.documentName = "";
     state.depositAmount = "";
     state.sharedRemark = "";
+    state.fields = loadFields();
+    state.calculationRules = [];
     state.rows = [createEmptyRow()];
     clearValidationState();
     ensureSharedRemarkState();
@@ -896,7 +938,7 @@
     }
 
     ensureSharedRemarkState();
-    const calculatedFields = getCalculatedFields(state.fields);
+    const calculatedFields = getCalculatedFields(state.fields, state.calculationRules);
     state.rows = state.rows.map(ensureRowShape);
     state.rows.forEach((row) => syncCalculatedRow(row, calculatedFields));
     els.rowList.innerHTML = state.rows
@@ -1123,6 +1165,7 @@
       if (state.fields[index].type === "select" && !state.fields[index].options.length) {
         state.fields[index].options = ["选项一", "选项二"];
       }
+      pruneCalculationRules();
       saveFields();
       render();
       scheduleDraftSave();
@@ -1133,7 +1176,7 @@
       state.fields[index].required = target.checked;
       saveFields();
       renderSharedRemark();
-      renderRows();
+      render();
       updateSummary();
       renderDraftPanel();
       scheduleDraftSave();
@@ -1159,6 +1202,7 @@
         delete getRowValues(row)[removed.key];
       });
       syncSharedRemarkFromRemovedField(removed);
+      pruneCalculationRules();
     } else if (action === "up" && index > 0) {
       [state.fields[index - 1], state.fields[index]] = [state.fields[index], state.fields[index - 1]];
     } else if (action === "down" && index < state.fields.length - 1) {
@@ -1324,7 +1368,7 @@
         dataUrl: String(reader.result || ""),
       });
       state.invalidCells.delete(`${rowIndex}:${fieldKey}`);
-      renderRows();
+      render();
       setStatus("图片已读取", "success");
       scheduleDraftSave();
     };
@@ -1391,6 +1435,10 @@
 
     state.sharedRemark = "";
     state.invalidSharedFields.clear();
+  }
+
+  function pruneCalculationRules() {
+    state.calculationRules = normalizeCalculationRules(state.calculationRules, state.fields);
   }
 
   function addField() {
@@ -1526,8 +1574,10 @@
 
     try {
       const result = await requestNaturalFillExtraction(text, fields);
+      const fieldChangeCount = applyNaturalFillFieldChanges(result.fieldChanges || []);
+      const ruleChangeCount = applyNaturalFillCalculationRules(result.calculationRules || []);
       const addedCount = appendNaturalFillRows(result.rows || []);
-      if (!addedCount) {
+      if (!addedCount && !fieldChangeCount && !ruleChangeCount) {
         setStatus("未解析到可填写的数据", "warning");
         return;
       }
@@ -1537,7 +1587,7 @@
       scheduleDraftSave();
       els.naturalFillText.value = "";
       closeNaturalFillPanel();
-      setStatus(`已智能填入 ${addedCount} 行`, result.warnings && result.warnings.length ? "warning" : "success");
+      setStatus(buildNaturalFillSuccessMessage(addedCount, fieldChangeCount, ruleChangeCount), result.warnings && result.warnings.length ? "warning" : "success");
     } catch (error) {
       setStatus(`智能填行失败：${error.message || "请稍后重试"}`, "error");
     } finally {
@@ -1557,6 +1607,118 @@
         options: field.options,
         required: field.required,
       }));
+  }
+
+  function applyNaturalFillFieldChanges(changes) {
+    let changedCount = 0;
+    (Array.isArray(changes) ? changes : []).forEach((change) => {
+      if (!change || typeof change !== "object") {
+        return;
+      }
+
+      if (change.action === "update") {
+        const field = state.fields.find((item) => item.key === change.key);
+        if (!field) {
+          return;
+        }
+        if (typeof change.label === "string" && change.label.trim()) {
+          field.label = change.label.trim();
+        }
+        if (Object.prototype.hasOwnProperty.call(change, "group")) {
+          field.group = String(change.group || "");
+        }
+        if (FIELD_TYPES.includes(change.type) && change.type !== "image") {
+          field.type = change.type;
+        }
+        if (Array.isArray(change.options)) {
+          field.options = change.options.map(String).map((item) => item.trim()).filter(Boolean);
+        }
+        if (Object.prototype.hasOwnProperty.call(change, "required")) {
+          field.required = Boolean(change.required);
+        }
+        changedCount += 1;
+        return;
+      }
+
+      if (change.action !== "add") {
+        return;
+      }
+
+      const label = String(change.label || "").trim();
+      if (!label) {
+        return;
+      }
+
+      state.fields.push({
+        key: makeUniqueFieldKey(change.key || label),
+        label,
+        group: String(change.group || ""),
+        type: FIELD_TYPES.includes(change.type) && change.type !== "image" ? change.type : "text",
+        required: Boolean(change.required),
+        options: Array.isArray(change.options)
+          ? change.options.map(String).map((item) => item.trim()).filter(Boolean)
+          : [],
+      });
+      changedCount += 1;
+    });
+
+    if (changedCount) {
+      state.fields = normalizeFields(state.fields);
+      state.rows = state.rows.map((row) => normalizeAppRow(row, state.fields));
+      state.calculationRules = normalizeCalculationRules(state.calculationRules, state.fields);
+      ensureSharedRemarkState();
+      syncRowsWithCurrentCalculations();
+    }
+
+    return changedCount;
+  }
+
+  function makeUniqueFieldKey(value) {
+    const base = String(value || "field")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 32);
+    let key = base && !state.fields.some((field) => field.key === base) ? base : makeFieldKey(base || value || "field");
+    while (state.fields.some((field) => field.key === key)) {
+      key = makeFieldKey(base || value || "field");
+    }
+    return key;
+  }
+
+  function applyNaturalFillCalculationRules(rules) {
+    const normalizedRules = normalizeCalculationRules(rules, state.fields);
+    if (!normalizedRules.length) {
+      return 0;
+    }
+
+    const rulesByTarget = new Map(state.calculationRules.map((rule) => [rule.targetKey, rule]));
+    normalizedRules.forEach((rule) => {
+      rulesByTarget.set(rule.targetKey, rule);
+    });
+    state.calculationRules = normalizeCalculationRules(Array.from(rulesByTarget.values()), state.fields);
+    syncRowsWithCurrentCalculations();
+    return normalizedRules.length;
+  }
+
+  function syncRowsWithCurrentCalculations() {
+    const calculatedFields = getCalculatedFields(state.fields, state.calculationRules);
+    state.rows.forEach((row) => syncCalculatedRow(row, calculatedFields));
+  }
+
+  function buildNaturalFillSuccessMessage(addedCount, fieldChangeCount, ruleChangeCount) {
+    const parts = [];
+    if (addedCount) {
+      parts.push(`填入 ${addedCount} 行`);
+    }
+    if (fieldChangeCount) {
+      parts.push(`更新 ${fieldChangeCount} 个表头`);
+    }
+    if (ruleChangeCount) {
+      parts.push(`应用 ${ruleChangeCount} 条规则`);
+    }
+    return `已智能处理：${parts.join("，")}`;
   }
 
   async function requestNaturalFillExtraction(text, fields) {
@@ -1716,7 +1878,7 @@
   function appendNaturalFillRows(rows) {
     const fieldsByKey = new Map(state.fields.map((field) => [field.key, field]));
     const sharedRemarkField = getSharedRemarkField(state.fields);
-    const calculatedFields = getCalculatedFields(state.fields);
+    const calculatedFields = getCalculatedFields(state.fields, state.calculationRules);
     const rowsToAdd = [];
 
     rows.forEach((item) => {
@@ -1808,7 +1970,7 @@
     try {
       ensureSharedRemarkState();
       await flushDraftSave({ showSaved: false });
-      const blob = await createXlsxBlob(state.fields, state.rows, state.documentName, state.depositAmount);
+      const blob = await createXlsxBlob(state.fields, state.rows, state.documentName, state.depositAmount, state.calculationRules);
       const filename = `自动生成表格_${formatTimestamp(new Date())}.xlsx`;
       downloadBlob(blob, filename);
       setStatus("Excel 已生成", "success");
@@ -2051,7 +2213,7 @@
     return normalizeLabel(left.group) === normalizeLabel(right.group);
   }
 
-  function getCalculatedFields(fields) {
+  function getCalculatedFields(fields, calculationRules) {
     const calculatedFields = new Map();
     const widthField = fields.find(isWidthField);
     const heightField = fields.find(isHeightField);
@@ -2089,6 +2251,13 @@
       }
     });
 
+    normalizeCalculationRules(calculationRules || state.calculationRules, fields).forEach((rule) => {
+      const sourceFields = rule.sourceKeys.map((key) => fields.find((field) => field.key === key));
+      if (sourceFields.every(Boolean)) {
+        calculatedFields.set(rule.targetKey, makeCalculatedField(rule.operator, fields, sourceFields[0], sourceFields[1]));
+      }
+    });
+
     return calculatedFields;
   }
 
@@ -2104,6 +2273,7 @@
   function makeCalculatedField(type, fields, firstField, secondField) {
     return {
       type,
+      operator: CALCULATION_TYPE_OPERATORS[type] || type,
       sourceKeys: [firstField.key, secondField.key],
       sourceIndexes: [fields.indexOf(firstField), fields.indexOf(secondField)],
     };
@@ -2112,6 +2282,7 @@
   function makeCustomRowAmountField() {
     return {
       type: "quantityAmount",
+      operator: "multiply",
       sourceKeys: [CUSTOM_ROW_QUANTITY_KEY, CUSTOM_ROW_UNIT_PRICE_KEY],
       sourceIndexes: [1, 2],
     };
@@ -2135,8 +2306,15 @@
     if (values.some((value) => value == null)) {
       return "";
     }
-    if (calculatedField.type === "sum") {
+    const operator = calculatedField.operator || CALCULATION_TYPE_OPERATORS[calculatedField.type] || "multiply";
+    if (operator === "add") {
       return values[0] + values[1];
+    }
+    if (operator === "subtract") {
+      return values[0] - values[1];
+    }
+    if (operator === "divide") {
+      return values[1] === 0 ? "" : values[0] / values[1];
     }
     return values[0] * values[1];
   }
@@ -2158,7 +2336,7 @@
     }
 
     const values = getRowValues(row);
-    const fieldsToCalculate = calculatedFields || getCalculatedFields(state.fields);
+    const fieldsToCalculate = calculatedFields || getCalculatedFields(state.fields, state.calculationRules);
     fieldsToCalculate.forEach((calculatedField, fieldKey) => {
       const value = calculateFieldValue(row, calculatedField);
       values[fieldKey] = value === "" ? "" : formatCalculatedValue(value);
@@ -2182,7 +2360,7 @@
       return;
     }
 
-    const calculatedFields = getCalculatedFields(state.fields);
+    const calculatedFields = getCalculatedFields(state.fields, state.calculationRules);
     calculatedFields.forEach((calculatedField, fieldKey) => {
       const selector = `[data-row-index="${rowIndex}"][data-calculated-field-key="${fieldKey}"]`;
       const input = els.rowList.querySelector(selector);
@@ -2225,18 +2403,19 @@
     setTimeout(() => URL.revokeObjectURL(url), 1200);
   }
 
-  async function createXlsxBlob(fields, rows, documentName, depositAmount) {
+  async function createXlsxBlob(fields, rows, documentName, depositAmount, calculationRules) {
     const normalizedFields = normalizeFields(fields).filter((field) => field.label.trim());
     const normalizedRows = Array.isArray(rows) ? rows.map((row) => normalizeAppRow(row, normalizedFields)) : [];
+    const normalizedRules = normalizeCalculationRules(calculationRules, normalizedFields);
     const images = collectWorksheetImages(normalizedFields, normalizedRows);
-    const xmlFiles = buildWorkbookFiles(normalizedFields, normalizedRows, images, documentName, depositAmount);
+    const xmlFiles = buildWorkbookFiles(normalizedFields, normalizedRows, images, documentName, depositAmount, normalizedRules);
     const zipBytes = createZip(xmlFiles);
     return new Blob([zipBytes], { type: MIME_XLSX });
   }
 
-  function buildWorkbookFiles(fields, rows, images, documentName, depositAmount) {
+  function buildWorkbookFiles(fields, rows, images, documentName, depositAmount, calculationRules) {
     const worksheetImages = Array.isArray(images) ? images : collectWorksheetImages(fields, rows);
-    const sheetXml = buildSheetXml(fields, rows, worksheetImages, documentName, depositAmount);
+    const sheetXml = buildSheetXml(fields, rows, worksheetImages, documentName, depositAmount, calculationRules);
     const contentTypes = buildContentTypesXml(worksheetImages);
     const worksheetRelationships = worksheetImages.length ? buildWorksheetRelsXml() : null;
     const files = [
@@ -2387,8 +2566,8 @@ ${anchors}\
 </xdr:oneCellAnchor>`;
   }
 
-  function buildSheetXml(fields, rows, images, documentName, depositAmount) {
-    const calculatedFields = getCalculatedFields(fields);
+  function buildSheetXml(fields, rows, images, documentName, depositAmount, calculationRules) {
+    const calculatedFields = getCalculatedFields(fields, calculationRules);
     const worksheetImages = Array.isArray(images) ? images : [];
     const sharedRemarkField = getSharedRemarkField(fields);
     const sharedRemarkIndex = sharedRemarkField ? fields.indexOf(sharedRemarkField) : -1;
@@ -2406,6 +2585,7 @@ ${anchors}\
     const summaryInfo = buildSummaryRow(fields, rows, dataStartRow, summaryRowNumber, depositAmount);
     const noticeInfo = buildNoticeRow(noticeRowNumber, columnCount);
     const customMergeRefs = [];
+    const firstFieldMergeInfo = buildFirstFieldMergeInfo(fields, rows, dataStartRow);
     const dataRows = rows
       .map((row, rowIndex) => {
         const rowNumber = rowIndex + dataStartRow;
@@ -2423,6 +2603,11 @@ ${anchors}\
               return makeTextCell(rowNumber, colNumber, "", CUSTOM_TEXT_STYLE_ID);
             }
 
+            const firstFieldMergeState = fieldIndex === 0 ? firstFieldMergeInfo.rowStates.get(rowNumber) : "";
+            if (firstFieldMergeState === "tail") {
+              return makeTextCell(rowNumber, colNumber, "", CENTER_TEXT_STYLE_ID);
+            }
+
             const inMergedRemarkTail = customRemarkMerge && fieldIndex > sharedRemarkIndex;
             if (inMergedRemarkTail) {
               return makeTextCell(rowNumber, colNumber, "", 2);
@@ -2435,7 +2620,9 @@ ${anchors}\
             const value = sharedRemarkField && field.key === sharedRemarkField.key && rowIndex > 0 && !custom
               ? ""
               : values[field.key];
-            return makeDataCell(rowNumber, colNumber, field, value, custom);
+            return firstFieldMergeState === "top"
+              ? makeCenteredDataCell(rowNumber, colNumber, field, value)
+              : makeDataCell(rowNumber, colNumber, field, value, custom);
           })
           .join("");
         if (customRemarkMerge) {
@@ -2464,10 +2651,66 @@ ${anchors}\
 <sheetFormatPr defaultRowHeight="18"/>\
 <cols>${cols}</cols>\
 <sheetData>${titleInfo.rows}${headerInfo.rows}${dataRows}${summaryInfo.rows}${noticeInfo.rows}</sheetData>\
-${mergeBlocks(titleInfo.mergeRefs.concat(headerInfo.mergeRefs, sharedRemarkMergeRefs, customMergeRefs, summaryInfo.mergeRefs, noticeInfo.mergeRefs))}\
+${mergeBlocks(titleInfo.mergeRefs.concat(headerInfo.mergeRefs, firstFieldMergeInfo.mergeRefs, sharedRemarkMergeRefs, customMergeRefs, summaryInfo.mergeRefs, noticeInfo.mergeRefs))}\
 <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>\
 ${drawing}\
 </worksheet>`);
+  }
+
+  function buildFirstFieldMergeInfo(fields, rows, dataStartRow) {
+    const mergeRefs = [];
+    const rowStates = new Map();
+    const firstField = fields[0];
+    if (!firstField || rows.length < 2) {
+      return { mergeRefs, rowStates };
+    }
+
+    let activeValue = "";
+    let activeRows = [];
+    const flushActiveRows = () => {
+      if (activeRows.length > 1) {
+        const firstRow = activeRows[0];
+        const lastRow = activeRows[activeRows.length - 1];
+        mergeRefs.push(`${cellRef(firstRow, 1)}:${cellRef(lastRow, 1)}`);
+        activeRows.forEach((rowNumber, index) => {
+          rowStates.set(rowNumber, index === 0 ? "top" : "tail");
+        });
+      }
+      activeValue = "";
+      activeRows = [];
+    };
+
+    rows.forEach((row, index) => {
+      const rowNumber = dataStartRow + index;
+      if (isCustomRow(row)) {
+        flushActiveRows();
+        return;
+      }
+
+      const value = getFirstFieldMergeValue(firstField, getRowValues(row));
+      if (!value) {
+        flushActiveRows();
+        return;
+      }
+
+      if (activeRows.length && value !== activeValue) {
+        flushActiveRows();
+      }
+
+      activeValue = value;
+      activeRows.push(rowNumber);
+    });
+    flushActiveRows();
+
+    return { mergeRefs, rowStates };
+  }
+
+  function getFirstFieldMergeValue(field, values) {
+    const rawValue = values && values[field.key] != null ? String(values[field.key]) : "";
+    if (field.type === "number") {
+      return normalizeNonNegativeNumberValue(rawValue);
+    }
+    return rawValue.trim();
   }
 
   function buildSharedRemarkMergeRefs(rows, dataStartRow, sharedRemarkIndex) {
@@ -2699,6 +2942,7 @@ ${drawing}\
           colNumber,
           {
             type: "quantityAmount",
+            operator: "multiply",
             sourceIndexes: [exportMap.quantityIndex, exportMap.unitPriceIndex],
           },
           CUSTOM_CALCULATED_STYLE_ID
@@ -2731,7 +2975,7 @@ ${drawing}\
 <border><left style="thin"><color rgb="FFD8E0DE"/></left><right style="thin"><color rgb="FFD8E0DE"/></right><top style="thin"><color rgb="FFD8E0DE"/></top><bottom style="thin"><color rgb="FFD8E0DE"/></bottom><diagonal/></border>\
 </borders>\
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>\
-<cellXfs count="12">\
+<cellXfs count="14">\
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>\
 <xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
 <xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf>\
@@ -2744,6 +2988,8 @@ ${drawing}\
 <xf numFmtId="164" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
 <xf numFmtId="2" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
 <xf numFmtId="2" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyNumberFormat="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
+<xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
+<xf numFmtId="2" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf>\
 </cellXfs>\
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>\
 <dxfs count="0"/>\
@@ -2779,13 +3025,51 @@ ${drawing}\
     return makeTextCell(rowNumber, colNumber, value, textStyleId);
   }
 
+  function makeCenteredDataCell(rowNumber, colNumber, field, rawValue) {
+    const rawText = rawValue == null ? "" : String(rawValue);
+    const value = field.type === "number" ? normalizeNonNegativeNumberValue(rawText) : rawText;
+    if (field.type === "image" || value === "") {
+      return makeTextCell(rowNumber, colNumber, "", CENTER_TEXT_STYLE_ID);
+    }
+
+    if (field.type === "number") {
+      const numericValue = Number(value);
+      if (Number.isFinite(numericValue)) {
+        return `<c r="${cellRef(rowNumber, colNumber)}" s="${CENTER_NUMBER_STYLE_ID}"><v>${numericValue}</v></c>`;
+      }
+    }
+
+    if (field.type === "date" && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return `<c r="${cellRef(rowNumber, colNumber)}" s="${CENTER_DATE_STYLE_ID}"><v>${dateToExcelSerial(value)}</v></c>`;
+    }
+
+    return makeTextCell(rowNumber, colNumber, value, CENTER_TEXT_STYLE_ID);
+  }
+
   function makeFormulaCell(rowNumber, colNumber, calculatedField, styleId) {
     const [firstSourceIndex, secondSourceIndex] = calculatedField.sourceIndexes;
     const firstRef = cellRef(rowNumber, firstSourceIndex + 1);
     const secondRef = cellRef(rowNumber, secondSourceIndex + 1);
-    const operator = calculatedField.type === "sum" ? "+" : "*";
-    const formula = `IF(OR(${firstRef}="",${secondRef}=""),"",${firstRef}${operator}${secondRef})`;
+    const operator = calculatedField.operator || CALCULATION_TYPE_OPERATORS[calculatedField.type] || "multiply";
+    const symbol = getFormulaOperator(operator);
+    const emptyCheck = operator === "divide"
+      ? `OR(${firstRef}="",${secondRef}="",${secondRef}=0)`
+      : `OR(${firstRef}="",${secondRef}="")`;
+    const formula = `IF(${emptyCheck},"",${firstRef}${symbol}${secondRef})`;
     return `<c r="${cellRef(rowNumber, colNumber)}" s="${styleId || CALCULATED_STYLE_ID}"><f>${escapeXml(formula)}</f></c>`;
+  }
+
+  function getFormulaOperator(operator) {
+    if (operator === "add") {
+      return "+";
+    }
+    if (operator === "subtract") {
+      return "-";
+    }
+    if (operator === "divide") {
+      return "/";
+    }
+    return "*";
   }
 
   function makeTextCell(rowNumber, colNumber, value, styleId) {

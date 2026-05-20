@@ -123,7 +123,7 @@ async function handleNaturalFillExtract(request, response) {
     return;
   }
 
-  const prompt = buildExtractionPrompt(fields, payload.text);
+  const prompt = buildEnhancedExtractionPrompt(fields, payload.text);
   const doubaoPayload = {
     model,
     temperature: 0,
@@ -207,6 +207,33 @@ function buildExtractionPrompt(fields, text) {
   ].join("\n");
 }
 
+function buildEnhancedExtractionPrompt(fields, text) {
+  return [
+    "You are an AgentSkill for filling an Excel table from natural-language Chinese input.",
+    "Use the provided field list to generate one or more data rows. If, and only if, the user explicitly asks to change current headers or calculation rules, also return temporary table changes.",
+    "Return JSON only. Do not return Markdown, explanations, code fences, or any extra text.",
+    "The JSON shape must be: {\"rows\":[{\"values\":{\"field_key\":\"value\"}}],\"fieldChanges\":[],\"calculationRules\":[],\"warnings\":[]}",
+    "Rules:",
+    "1. Each item/product/room/install location/detail/newline usually maps to one row.",
+    "2. Row value keys must come from the supplied field list. Never invent row value keys.",
+    "3. Unknown row fields should be omitted or set to an empty string.",
+    "4. Number fields should remove currency symbols, Chinese units, and spaces; keep only non-negative numbers and decimal points.",
+    "5. Date fields should preferably use YYYY-MM-DD.",
+    "6. Select fields should prefer the closest original option text.",
+    "7. Return fieldChanges only when the user explicitly asks to add, rename, or modify headers. Never delete headers.",
+    "8. fieldChanges items must use: {\"action\":\"add|update\",\"key\":\"existing_key_or_empty\",\"label\":\"header label\",\"group\":\"parent header\",\"type\":\"text|number|date|select\",\"options\":[],\"required\":false}.",
+    "9. For add, omit key when unsure; the client will generate it. For update, key must be an existing key from the field list.",
+    "10. Return calculationRules only when the user explicitly asks to change a calculation rule.",
+    "11. calculationRules items must use: {\"targetKey\":\"existing_key\",\"sourceKeys\":[\"existing_key_1\",\"existing_key_2\"],\"operator\":\"add|subtract|multiply|divide\"}.",
+    "12. Example: if the user says material/usage should be width times height, target the material/meters field, source width and height fields, operator multiply.",
+    "13. If there are no fillable rows and no valid changes, return rows as [] and explain briefly in warnings.",
+    "Field list:",
+    JSON.stringify(fields, null, 2),
+    "User description:",
+    String(text || ""),
+  ].join("\n");
+}
+
 function validateExtractPayload(payload) {
   if (!payload || typeof payload !== "object") {
     return { ok: false, error: "请求体必须是 JSON 对象" };
@@ -273,7 +300,96 @@ function normalizeExtractionResult(extracted, fields) {
     ? extracted.warnings.map(String).filter(Boolean).slice(0, 5)
     : [];
 
-  return { rows: normalizedRows, warnings };
+  const fieldChanges = normalizeFieldChanges(extracted.fieldChanges, fields);
+  const calculationRules = normalizeCalculationRules(extracted.calculationRules, fields);
+  const fieldChangeCount = Array.isArray(extracted.fieldChanges) ? extracted.fieldChanges.length : 0;
+  const calculationRuleCount = Array.isArray(extracted.calculationRules) ? extracted.calculationRules.length : 0;
+  if (fieldChangeCount > fieldChanges.length) {
+    warnings.push("Some invalid header changes were ignored.");
+  }
+  if (calculationRuleCount > calculationRules.length) {
+    warnings.push("Some invalid calculation rules were ignored.");
+  }
+
+  return { rows: normalizedRows, fieldChanges, calculationRules, warnings: warnings.slice(0, 5) };
+}
+
+function normalizeFieldChanges(changes, fields) {
+  const allowedKeys = new Set(fields.map((field) => field.key));
+  return (Array.isArray(changes) ? changes : [])
+    .map((change) => {
+      if (!change || typeof change !== "object") {
+        return null;
+      }
+
+      const action = change.action === "update" ? "update" : change.action === "add" ? "add" : "";
+      if (!action) {
+        return null;
+      }
+
+      const key = String(change.key || "").trim();
+      if (action === "update" && !allowedKeys.has(key)) {
+        return null;
+      }
+
+      const label = String(change.label || "").trim();
+      const group = String(change.group || "");
+      const type = ["text", "number", "date", "select"].includes(change.type) ? change.type : "";
+      const options = Array.isArray(change.options)
+        ? change.options.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 50)
+        : [];
+      const normalized = { action };
+
+      if (key) {
+        normalized.key = key;
+      }
+      if (label) {
+        normalized.label = label;
+      }
+      if (Object.prototype.hasOwnProperty.call(change, "group")) {
+        normalized.group = group;
+      }
+      if (type) {
+        normalized.type = type;
+      }
+      if (type === "select" || options.length) {
+        normalized.options = options;
+      }
+      if (Object.prototype.hasOwnProperty.call(change, "required")) {
+        normalized.required = Boolean(change.required);
+      }
+
+      return action === "add" && !normalized.label ? null : normalized;
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function normalizeCalculationRules(rules, fields) {
+  const allowedKeys = new Set(fields.map((field) => field.key));
+  const allowedOperators = new Set(["add", "subtract", "multiply", "divide"]);
+  return (Array.isArray(rules) ? rules : [])
+    .map((rule) => {
+      if (!rule || typeof rule !== "object") {
+        return null;
+      }
+
+      const targetKey = String(rule.targetKey || "").trim();
+      const sourceKeys = Array.isArray(rule.sourceKeys)
+        ? rule.sourceKeys.map((key) => String(key || "").trim()).filter(Boolean)
+        : [];
+      const operator = String(rule.operator || "").trim();
+      if (!allowedKeys.has(targetKey) || sourceKeys.length !== 2 || !allowedOperators.has(operator)) {
+        return null;
+      }
+      if (!sourceKeys.every((key) => allowedKeys.has(key)) || sourceKeys.includes(targetKey)) {
+        return null;
+      }
+
+      return { targetKey, sourceKeys, operator };
+    })
+    .filter(Boolean)
+    .slice(0, 20);
 }
 
 function normalizeFieldValue(value, field) {
