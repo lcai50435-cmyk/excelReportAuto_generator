@@ -1,19 +1,27 @@
 "use strict";
 
 const http = require("node:http");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { URL } = require("node:url");
 const os = require("node:os");
 
 const ROOT_DIR = __dirname;
+loadEnvFile(path.join(ROOT_DIR, ".env"));
+
+const NODE_ENV = process.env.NODE_ENV || "development";
+const IS_PRODUCTION = NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const SKILL_PATH = "/api/agent-skills/doubao-excel-natural-fill/extract";
-
-loadEnvFile(path.join(ROOT_DIR, ".env"));
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 20);
+const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.PUBLIC_ORIGIN, process.env.ALLOWED_ORIGINS);
+const naturalFillRateLimits = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -27,15 +35,19 @@ const MIME_TYPES = {
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host || `${HOST}:${PORT}`}`);
-    setCorsHeaders(response);
+    const corsAllowed = setCorsHeaders(request, response);
 
     if (request.method === "OPTIONS") {
-      response.writeHead(204);
+      response.writeHead(corsAllowed ? 204 : 403);
       response.end();
       return;
     }
 
     if (request.method === "POST" && url.pathname === SKILL_PATH) {
+      if (!corsAllowed || !isRequestOriginAllowed(request)) {
+        sendJson(response, 403, { error: "Origin is not allowed" });
+        return;
+      }
       await handleNaturalFillExtract(request, response);
       return;
     }
@@ -71,6 +83,19 @@ function getAccessUrls(port, host) {
 }
 
 async function handleNaturalFillExtract(request, response) {
+  const auth = validateAppPassword(request);
+  if (!auth.ok) {
+    sendJson(response, auth.statusCode, { error: auth.error });
+    return;
+  }
+
+  const rateLimit = checkNaturalFillRateLimit(request);
+  if (!rateLimit.ok) {
+    response.setHeader("Retry-After", String(Math.ceil(rateLimit.retryAfterMs / 1000)));
+    sendJson(response, 429, { error: "Too many AI requests. Please try again later." });
+    return;
+  }
+
   const apiKey = process.env.DOUBAO_API_KEY;
   const model = process.env.DOUBAO_MODEL;
   const baseUrl = (process.env.DOUBAO_BASE_URL || DEFAULT_DOUBAO_BASE_URL).replace(/\/+$/, "");
@@ -402,10 +427,141 @@ function sendJson(response, statusCode, payload) {
   response.end(body);
 }
 
-function setCorsHeaders(response) {
-  response.setHeader("Access-Control-Allow-Origin", "*");
+function setCorsHeaders(request, response) {
+  const origin = request.headers.origin;
+  const allowedOrigin = getAllowedOrigin(request);
+  if (allowedOrigin) {
+    response.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    response.setHeader("Vary", "Origin");
+  } else if (!IS_PRODUCTION) {
+    response.setHeader("Access-Control-Allow-Origin", "*");
+  }
   response.setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-App-Password");
+  return !origin || Boolean(allowedOrigin) || !IS_PRODUCTION;
+}
+
+function getAllowedOrigin(request) {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return "";
+  }
+  if (isSameHostOrigin(origin, request)) {
+    return origin;
+  }
+  if (!IS_PRODUCTION) {
+    return origin;
+  }
+  return ALLOWED_ORIGINS.has(normalizeOrigin(origin)) ? origin : "";
+}
+
+function isRequestOriginAllowed(request) {
+  const origin = request.headers.origin;
+  const normalizedOrigin = normalizeOrigin(origin);
+  return !IS_PRODUCTION || !origin || isSameHostOrigin(origin, request) || ALLOWED_ORIGINS.has(normalizedOrigin);
+}
+
+function parseAllowedOrigins(publicOrigin, allowedOrigins) {
+  return new Set([publicOrigin, ...(allowedOrigins || "").split(",")]
+    .map(normalizeOrigin)
+    .filter(Boolean));
+}
+
+function normalizeOrigin(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "";
+  }
+  try {
+    const url = new URL(text);
+    return url.origin;
+  } catch (error) {
+    return text.replace(/\/+$/, "");
+  }
+}
+
+function getRequestOrigin(request) {
+  const host = request.headers["x-forwarded-host"] || request.headers.host;
+  if (!host) {
+    return "";
+  }
+  const forwardedProto = String(request.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  const proto = forwardedProto || (request.socket.encrypted ? "https" : "http");
+  return normalizeOrigin(`${proto}://${host}`);
+}
+
+function isSameHostOrigin(origin, request) {
+  try {
+    const originUrl = new URL(origin);
+    const requestOrigin = getRequestOrigin(request);
+    if (!requestOrigin) {
+      return false;
+    }
+    const requestUrl = new URL(requestOrigin);
+    return originUrl.host === requestUrl.host;
+  } catch (error) {
+    return false;
+  }
+}
+
+function validateAppPassword(request) {
+  if (!APP_PASSWORD) {
+    if (IS_PRODUCTION) {
+      return { ok: false, statusCode: 500, error: "APP_PASSWORD is not configured" };
+    }
+    return { ok: true };
+  }
+
+  const provided = String(request.headers["x-app-password"] || "");
+  if (!provided || !timingSafeEqualText(provided, APP_PASSWORD)) {
+    return { ok: false, statusCode: 401, error: "Invalid app password" };
+  }
+
+  return { ok: true };
+}
+
+function timingSafeEqualText(a, b) {
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function checkNaturalFillRateLimit(request) {
+  if (!RATE_LIMIT_MAX || !RATE_LIMIT_WINDOW_MS) {
+    return { ok: true };
+  }
+
+  const now = Date.now();
+  const key = getClientIp(request);
+  let bucket = naturalFillRateLimits.get(key);
+  if (!bucket || now >= bucket.resetAt) {
+    bucket = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    naturalFillRateLimits.set(key, bucket);
+  }
+
+  bucket.count += 1;
+  if (naturalFillRateLimits.size > 500) {
+    pruneRateLimitBuckets(now);
+  }
+
+  if (bucket.count > RATE_LIMIT_MAX) {
+    return { ok: false, retryAfterMs: Math.max(0, bucket.resetAt - now) };
+  }
+
+  return { ok: true };
+}
+
+function pruneRateLimitBuckets(now) {
+  naturalFillRateLimits.forEach((bucket, key) => {
+    if (now >= bucket.resetAt) {
+      naturalFillRateLimits.delete(key);
+    }
+  });
+}
+
+function getClientIp(request) {
+  const forwardedFor = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwardedFor || request.socket.remoteAddress || "unknown";
 }
 
 function loadEnvFile(envPath) {

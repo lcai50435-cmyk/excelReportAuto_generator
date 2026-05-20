@@ -50,6 +50,7 @@
   const ZIP_EPOCH = new Date("1980-01-01T00:00:00Z");
   const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
   const NATURAL_FILL_ENDPOINT = "/api/agent-skills/doubao-excel-natural-fill/extract";
+  const NATURAL_FILL_PASSWORD_STORAGE_KEY = "excelNaturalFillAppPassword";
   const IMAGE_CELL_WIDTH_PX = 132;
   const IMAGE_CELL_HEIGHT_PX = 96;
   const IMAGE_CELL_PADDING_PX = 6;
@@ -1560,17 +1561,14 @@
 
   async function requestNaturalFillExtraction(text, fields) {
     const body = JSON.stringify({ text, fields });
-    let response;
-    try {
-      response = await fetch(NATURAL_FILL_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body,
-      });
-    } catch (error) {
-      response = await fetchLocalNaturalFillEndpoint(body, error);
+    let response = await fetchNaturalFillEndpoint(body);
+
+    if (response.status === 401) {
+      clearNaturalFillAppPassword();
+      const password = promptNaturalFillAppPassword();
+      if (password) {
+        response = await fetchNaturalFillEndpoint(body, password);
+      }
     }
 
     if (response.status === 404 && shouldTryLocalNaturalFillEndpoint()) {
@@ -1595,7 +1593,19 @@
     return payload;
   }
 
-  async function fetchLocalNaturalFillEndpoint(body, originalError) {
+  async function fetchNaturalFillEndpoint(body, password) {
+    try {
+      return await fetch(NATURAL_FILL_ENDPOINT, {
+        method: "POST",
+        headers: buildNaturalFillHeaders(password),
+        body,
+      });
+    } catch (error) {
+      return await fetchLocalNaturalFillEndpoint(body, error, password);
+    }
+  }
+
+  async function fetchLocalNaturalFillEndpoint(body, originalError, password) {
     if (!shouldTryLocalNaturalFillEndpoint()) {
       throw new Error(getNaturalFillConnectionError(originalError));
     }
@@ -1603,9 +1613,7 @@
     try {
       return await fetch(`${getNaturalFillFallbackOrigin()}${NATURAL_FILL_ENDPOINT}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: buildNaturalFillHeaders(password),
         body,
       });
     } catch (error) {
@@ -1613,13 +1621,67 @@
     }
   }
 
+  function buildNaturalFillHeaders(password) {
+    const headers = {
+      "Content-Type": "application/json",
+    };
+    const appPassword = String(password || readNaturalFillAppPassword()).trim();
+    if (appPassword) {
+      headers["X-App-Password"] = appPassword;
+    }
+    return headers;
+  }
+
+  function readNaturalFillAppPassword() {
+    try {
+      return root.localStorage ? root.localStorage.getItem(NATURAL_FILL_PASSWORD_STORAGE_KEY) || "" : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function saveNaturalFillAppPassword(password) {
+    try {
+      if (root.localStorage) {
+        root.localStorage.setItem(NATURAL_FILL_PASSWORD_STORAGE_KEY, password);
+      }
+    } catch (error) {
+      // Ignore private browsing/storage restrictions; the password can be re-entered.
+    }
+  }
+
+  function clearNaturalFillAppPassword() {
+    try {
+      if (root.localStorage) {
+        root.localStorage.removeItem(NATURAL_FILL_PASSWORD_STORAGE_KEY);
+      }
+    } catch (error) {
+      // Ignore private browsing/storage restrictions.
+    }
+  }
+
+  function promptNaturalFillAppPassword() {
+    if (!root.prompt) {
+      return "";
+    }
+    const password = String(root.prompt("请输入访问口令") || "").trim();
+    if (password) {
+      saveNaturalFillAppPassword(password);
+    }
+    return password;
+  }
+
   function shouldTryLocalNaturalFillEndpoint() {
     if (!root.location) {
       return false;
     }
 
-    const host = root.location.host;
-    return root.location.protocol === "file:" || (host && host !== "127.0.0.1:4173" && host !== "localhost:4173");
+    if (root.location.protocol === "file:") {
+      return true;
+    }
+
+    const hostname = root.location.hostname;
+    return isLocalNaturalFillHostname(hostname) && root.location.port !== "4173";
   }
 
   function getNaturalFillFallbackOrigin() {
@@ -1628,7 +1690,11 @@
     }
 
     const hostname = root.location.hostname || "127.0.0.1";
-    return `http://${hostname}:4173`;
+    return `http://${hostname === "::1" ? "[::1]" : hostname}:4173`;
+  }
+
+  function isLocalNaturalFillHostname(hostname) {
+    return hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
   }
 
   function getNaturalFillConnectionError(error) {
