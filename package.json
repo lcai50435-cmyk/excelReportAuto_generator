@@ -1,0 +1,12 @@
+{
+  "name": "excel-ai-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Excel smart fill tool with a server-side AI proxy.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js"
+  }
+}
