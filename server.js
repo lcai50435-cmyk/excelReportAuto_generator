@@ -15,13 +15,18 @@ const IS_PRODUCTION = NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_EXPORT_BYTES = Number(process.env.MAX_EXPORT_BYTES || 30 * 1024 * 1024);
+const EXPORT_TTL_MS = Number(process.env.EXPORT_TTL_MS || 10 * 60 * 1000);
+const EXPORT_MAX_ITEMS = Number(process.env.EXPORT_MAX_ITEMS || 50);
 const DEFAULT_DOUBAO_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3";
 const SKILL_PATH = "/api/agent-skills/doubao-excel-natural-fill/extract";
+const EXPORT_PATH_PREFIX = "/api/exports/xlsx";
 const APP_PASSWORD = process.env.APP_PASSWORD || "";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60 * 1000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 20);
 const ALLOWED_ORIGINS = parseAllowedOrigins(process.env.PUBLIC_ORIGIN, process.env.ALLOWED_ORIGINS);
 const naturalFillRateLimits = new Map();
+const exportFiles = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -49,6 +54,20 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       await handleNaturalFillExtract(request, response);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === EXPORT_PATH_PREFIX) {
+      if (!corsAllowed || !isRequestOriginAllowed(request)) {
+        sendJson(response, 403, { error: "Origin is not allowed" });
+        return;
+      }
+      await handleExportCreate(request, response, url);
+      return;
+    }
+
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith(`${EXPORT_PATH_PREFIX}/`)) {
+      handleExportDownload(request, response, url);
       return;
     }
 
@@ -123,7 +142,8 @@ async function handleNaturalFillExtract(request, response) {
     return;
   }
 
-  const prompt = buildEnhancedExtractionPrompt(fields, payload.text);
+  const calculationRules = normalizeCalculationRules(payload.calculationRules, fields);
+  const prompt = buildEnhancedExtractionPrompt(fields, calculationRules, payload.text);
   const doubaoPayload = {
     model,
     temperature: 0,
@@ -176,7 +196,7 @@ async function handleNaturalFillExtract(request, response) {
     return;
   }
 
-  const result = normalizeExtractionResult(extracted, fields);
+  const result = normalizeExtractionResult(extracted, fields, calculationRules);
   sendJson(response, 200, result);
 }
 
@@ -207,28 +227,35 @@ function buildExtractionPrompt(fields, text) {
   ].join("\n");
 }
 
-function buildEnhancedExtractionPrompt(fields, text) {
+function buildEnhancedExtractionPrompt(fields, calculationRules, text) {
   return [
     "You are an AgentSkill for filling an Excel table from natural-language Chinese input.",
     "Use the provided field list to generate one or more data rows. If, and only if, the user explicitly asks to change current headers or calculation rules, also return temporary table changes.",
     "Return JSON only. Do not return Markdown, explanations, code fences, or any extra text.",
-    "The JSON shape must be: {\"rows\":[{\"values\":{\"field_key\":\"value\"}}],\"fieldChanges\":[],\"calculationRules\":[],\"warnings\":[]}",
+    "The JSON shape must be: {\"rows\":[{\"values\":{\"field_key\":\"value\"}}],\"fieldChanges\":[],\"calculationRuleChanges\":[],\"warnings\":[]}",
     "Rules:",
     "1. Each item/product/room/install location/detail/newline usually maps to one row.",
-    "2. Row value keys must come from the supplied field list. Never invent row value keys.",
+    "2. Row value keys must come from the supplied field list. Never invent row value keys. Do not put image fields in row values.",
     "3. Unknown row fields should be omitted or set to an empty string.",
     "4. Number fields should remove currency symbols, Chinese units, and spaces; keep only non-negative numbers and decimal points.",
     "5. Date fields should preferably use YYYY-MM-DD.",
     "6. Select fields should prefer the closest original option text.",
-    "7. Return fieldChanges only when the user explicitly asks to add, rename, or modify headers. Never delete headers.",
-    "8. fieldChanges items must use: {\"action\":\"add|update\",\"key\":\"existing_key_or_empty\",\"label\":\"header label\",\"group\":\"parent header\",\"type\":\"text|number|date|select\",\"options\":[],\"required\":false}.",
-    "9. For add, omit key when unsure; the client will generate it. For update, key must be an existing key from the field list.",
-    "10. Return calculationRules only when the user explicitly asks to change a calculation rule.",
-    "11. calculationRules items must use: {\"targetKey\":\"existing_key\",\"sourceKeys\":[\"existing_key_1\",\"existing_key_2\"],\"operator\":\"add|subtract|multiply|divide\"}.",
-    "12. Example: if the user says material/usage should be width times height, target the material/meters field, source width and height fields, operator multiply.",
-    "13. If there are no fillable rows and no valid changes, return rows as [] and explain briefly in warnings.",
+    "7. Return fieldChanges only when the user explicitly asks to add, rename, modify, or delete headers. Header changes are temporary for the current table.",
+    "8. fieldChanges items must use one of these shapes:",
+    "   - add/update: {\"action\":\"add|update\",\"key\":\"existing_key_or_empty\",\"label\":\"header label\",\"group\":\"parent header\",\"type\":\"text|number|date|select\",\"options\":[],\"required\":false}",
+    "   - delete: {\"action\":\"delete\",\"key\":\"existing_key\"}",
+    "9. For add, omit key when unsure; the client will generate it. For update/delete, key must be an existing key from the field list. Never invent field keys.",
+    "10. Return calculationRuleChanges only when the user explicitly asks to set, replace, or delete a calculation rule.",
+    "11. calculationRuleChanges items must use one of these shapes:",
+    "   - set: {\"action\":\"set\",\"targetKey\":\"existing_key\",\"sourceKeys\":[\"existing_key_1\",\"existing_key_2\"],\"operator\":\"add|subtract|multiply|divide\"}",
+    "   - delete: {\"action\":\"delete\",\"targetKey\":\"existing_key\"}",
+    "12. Calculation v1 supports exactly two source fields. If a requested rule needs more than two fields or conditions, do not invent it; return a warning.",
+    "13. Example: if the user says material/usage should be width times height, target the material/meters field, source width and height fields, operator multiply.",
+    "14. If there are no fillable rows and no valid changes, return rows as [] and explain briefly in warnings.",
     "Field list:",
     JSON.stringify(fields, null, 2),
+    "Current calculation rules:",
+    JSON.stringify(calculationRules || [], null, 2),
     "User description:",
     String(text || ""),
   ].join("\n");
@@ -257,18 +284,18 @@ function validateExtractPayload(payload) {
 
 function normalizeRequestFields(fields) {
   return fields
-    .filter((field) => field && typeof field === "object" && field.key && field.type !== "image")
+    .filter((field) => field && typeof field === "object" && field.key)
     .map((field) => ({
       key: String(field.key),
       label: String(field.label || ""),
       group: String(field.group || ""),
-      type: ["text", "number", "date", "select"].includes(field.type) ? field.type : "text",
+      type: ["text", "number", "date", "select", "image"].includes(field.type) ? field.type : "text",
       options: Array.isArray(field.options) ? field.options.map(String).filter(Boolean) : [],
       required: Boolean(field.required),
     }));
 }
 
-function normalizeExtractionResult(extracted, fields) {
+function normalizeExtractionResult(extracted, fields, currentCalculationRules) {
   const allowedFields = new Map(fields.map((field) => [field.key, field]));
   const rows = Array.isArray(extracted.rows) ? extracted.rows : [];
   const normalizedRows = rows
@@ -282,7 +309,7 @@ function normalizeExtractionResult(extracted, fields) {
 
       Object.keys(sourceValues).forEach((key) => {
         const field = allowedFields.get(key);
-        if (!field) {
+        if (!field || field.type === "image") {
           return;
         }
 
@@ -301,17 +328,35 @@ function normalizeExtractionResult(extracted, fields) {
     : [];
 
   const fieldChanges = normalizeFieldChanges(extracted.fieldChanges, fields);
-  const calculationRules = normalizeCalculationRules(extracted.calculationRules, fields);
+  const calculationRuleChanges = normalizeCalculationRuleChanges(
+    extracted.calculationRuleChanges,
+    extracted.calculationRules,
+    fields,
+    currentCalculationRules
+  );
   const fieldChangeCount = Array.isArray(extracted.fieldChanges) ? extracted.fieldChanges.length : 0;
-  const calculationRuleCount = Array.isArray(extracted.calculationRules) ? extracted.calculationRules.length : 0;
+  const rawRuleChanges = Array.isArray(extracted.calculationRuleChanges)
+    ? extracted.calculationRuleChanges
+    : Array.isArray(extracted.calculationRules)
+      ? extracted.calculationRules
+      : [];
+  const calculationRuleCount = rawRuleChanges.length;
   if (fieldChangeCount > fieldChanges.length) {
     warnings.push("Some invalid header changes were ignored.");
   }
-  if (calculationRuleCount > calculationRules.length) {
+  if (calculationRuleCount > calculationRuleChanges.length) {
     warnings.push("Some invalid calculation rules were ignored.");
   }
 
-  return { rows: normalizedRows, fieldChanges, calculationRules, warnings: warnings.slice(0, 5) };
+  return {
+    rows: normalizedRows,
+    fieldChanges,
+    calculationRuleChanges,
+    calculationRules: calculationRuleChanges
+      .filter((change) => change.action === "set")
+      .map(({ action, ...rule }) => rule),
+    warnings: warnings.slice(0, 5),
+  };
 }
 
 function normalizeFieldChanges(changes, fields) {
@@ -322,14 +367,17 @@ function normalizeFieldChanges(changes, fields) {
         return null;
       }
 
-      const action = change.action === "update" ? "update" : change.action === "add" ? "add" : "";
+      const action = ["add", "update", "delete"].includes(change.action) ? change.action : "";
       if (!action) {
         return null;
       }
 
       const key = String(change.key || "").trim();
-      if (action === "update" && !allowedKeys.has(key)) {
+      if ((action === "update" || action === "delete") && !allowedKeys.has(key)) {
         return null;
+      }
+      if (action === "delete") {
+        return { action, key };
       }
 
       const label = String(change.label || "").trim();
@@ -360,6 +408,41 @@ function normalizeFieldChanges(changes, fields) {
       }
 
       return action === "add" && !normalized.label ? null : normalized;
+    })
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+function normalizeCalculationRuleChanges(changes, legacyRules, fields, currentRules) {
+  const allowedKeys = new Set(fields.map((field) => field.key));
+  const rawChanges = Array.isArray(changes)
+    ? changes
+    : Array.isArray(legacyRules)
+      ? legacyRules.map((rule) => ({ ...rule, action: "set" }))
+      : [];
+
+  return rawChanges
+    .map((change) => {
+      if (!change || typeof change !== "object") {
+        return null;
+      }
+
+      const action = change.action === "delete" ? "delete" : change.action === "set" ? "set" : "";
+      if (!action) {
+        return null;
+      }
+
+      const targetKey = String(change.targetKey || "").trim();
+      if (!allowedKeys.has(targetKey)) {
+        return null;
+      }
+
+      if (action === "delete") {
+        return { action, targetKey };
+      }
+
+      const normalizedRule = normalizeCalculationRules([change], fields)[0];
+      return normalizedRule ? { action, ...normalizedRule } : null;
     })
     .filter(Boolean)
     .slice(0, 20);
@@ -503,6 +586,124 @@ function readJsonBody(request) {
   });
 }
 
+function readBinaryBody(request, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let total = 0;
+    const chunks = [];
+
+    request.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        request.destroy();
+        reject(new Error("导出文件过大，请减少图片或行数后重试"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    request.on("end", () => {
+      resolve(Buffer.concat(chunks));
+    });
+    request.on("error", reject);
+  });
+}
+
+async function handleExportCreate(request, response, url) {
+  const contentType = String(request.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  if (contentType && contentType !== MIME_TYPES[".xlsx"]) {
+    sendJson(response, 415, { error: "只支持上传 xlsx 文件" });
+    return;
+  }
+
+  let buffer;
+  try {
+    buffer = await readBinaryBody(request, MAX_EXPORT_BYTES);
+  } catch (error) {
+    sendJson(response, 413, { error: error.message || "导出文件过大，请减少图片或行数后重试" });
+    return;
+  }
+
+  if (!buffer.length) {
+    sendJson(response, 400, { error: "导出文件为空" });
+    return;
+  }
+
+  pruneExportFiles();
+  const id = crypto.randomBytes(16).toString("hex");
+  const requestedName = url.searchParams.get("filename") || "自动生成表格.xlsx";
+  const filename = sanitizeDownloadFilename(requestedName);
+  exportFiles.set(id, {
+    buffer,
+    filename,
+    expiresAt: Date.now() + EXPORT_TTL_MS,
+  });
+  pruneExportFiles();
+
+  sendJson(response, 200, {
+    url: `${EXPORT_PATH_PREFIX}/${id}/${encodeURIComponent(filename)}`,
+    expiresInSeconds: Math.max(1, Math.floor(EXPORT_TTL_MS / 1000)),
+  });
+}
+
+function handleExportDownload(request, response, url) {
+  pruneExportFiles();
+  const parts = url.pathname.split("/").filter(Boolean);
+  const id = parts[3] || "";
+  const item = exportFiles.get(id);
+  if (!item || item.expiresAt <= Date.now()) {
+    exportFiles.delete(id);
+    response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    response.end("Download expired");
+    return;
+  }
+
+  const filename = item.filename || "自动生成表格.xlsx";
+  response.writeHead(200, {
+    "Content-Type": MIME_TYPES[".xlsx"],
+    "Content-Length": item.buffer.length,
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodeRFC5987ValueChars(filename)}`,
+    "Cache-Control": "private, no-store",
+  });
+  if (request.method === "HEAD") {
+    response.end();
+    return;
+  }
+  response.end(item.buffer);
+}
+
+function pruneExportFiles() {
+  const now = Date.now();
+  exportFiles.forEach((item, id) => {
+    if (!item || item.expiresAt <= now) {
+      exportFiles.delete(id);
+    }
+  });
+
+  if (exportFiles.size <= EXPORT_MAX_ITEMS) {
+    return;
+  }
+
+  const oldest = Array.from(exportFiles.entries()).sort((left, right) => left[1].expiresAt - right[1].expiresAt);
+  oldest.slice(0, Math.max(0, exportFiles.size - EXPORT_MAX_ITEMS)).forEach(([id]) => {
+    exportFiles.delete(id);
+  });
+}
+
+function sanitizeDownloadFilename(value) {
+  const text = String(value || "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+    .trim()
+    .slice(0, 120);
+  const filename = text || "自动生成表格.xlsx";
+  return /\.xlsx$/i.test(filename) ? filename : `${filename}.xlsx`;
+}
+
+function encodeRFC5987ValueChars(value) {
+  return encodeURIComponent(value)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, "%2A");
+}
+
 function serveStatic(pathname, request, response) {
   const safePathname = pathname === "/" ? "/index.html" : pathname;
   const decoded = decodeURIComponent(safePathname);
@@ -525,6 +726,9 @@ function serveStatic(pathname, request, response) {
       "Content-Type": MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream",
       "Content-Length": stats.size,
     };
+    if ([".html", ".js", ".css"].includes(path.extname(filePath).toLowerCase())) {
+      headers["Cache-Control"] = "no-store";
+    }
     response.writeHead(200, headers);
     if (request.method === "HEAD") {
       response.end();

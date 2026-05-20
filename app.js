@@ -50,6 +50,7 @@
   const ZIP_EPOCH = new Date("1980-01-01T00:00:00Z");
   const SUPPORTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
   const NATURAL_FILL_ENDPOINT = "/api/agent-skills/doubao-excel-natural-fill/extract";
+  const EXPORT_ENDPOINT = "/api/exports/xlsx";
   const NATURAL_FILL_PASSWORD_STORAGE_KEY = "excelNaturalFillAppPassword";
   const IMAGE_CELL_WIDTH_PX = 132;
   const IMAGE_CELL_HEIGHT_PX = 96;
@@ -81,6 +82,7 @@
     invalidSharedFields: new Set(),
     invalidFields: new Set(),
     calculationRules: [],
+    disabledAutoCalculationTargets: [],
     configOpen: false,
     drafts: [],
     activeDraftId: "",
@@ -158,6 +160,13 @@
         return { targetKey, sourceKeys, operator };
       })
       .filter(Boolean);
+  }
+
+  function normalizeDisabledAutoCalculationTargets(targets, fields) {
+    const fieldKeys = new Set((fields || state.fields || []).map((field) => field.key));
+    return Array.from(new Set((Array.isArray(targets) ? targets : [])
+      .map((key) => String(key || "").trim())
+      .filter((key) => fieldKeys.has(key))));
   }
 
   function loadFields() {
@@ -288,6 +297,7 @@
     const depositAmount = normalizeNonNegativeNumberValue(draft.depositAmount || "");
     const updatedAt = Number.isFinite(Number(draft.updatedAt)) ? Number(draft.updatedAt) : Date.now();
     const calculationRules = normalizeCalculationRules(draft.calculationRules, fields);
+    const disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(draft.disabledAutoCalculationTargets, fields);
 
     return {
       id: String(draft.id || makeDraftId()),
@@ -299,6 +309,7 @@
       fields,
       rows,
       calculationRules,
+      disabledAutoCalculationTargets,
       version: Number(draft.version) || DRAFT_VERSION,
     };
   }
@@ -316,6 +327,7 @@
     const depositAmount = normalizeNonNegativeNumberValue(state.depositAmount || "");
     const updatedAt = Date.now();
     const calculationRules = normalizeCalculationRules(state.calculationRules, fields);
+    const disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, fields);
 
     return {
       id: state.activeDraftId || makeDraftId(),
@@ -327,6 +339,7 @@
       fields,
       rows,
       calculationRules,
+      disabledAutoCalculationTargets,
       version: DRAFT_VERSION,
     };
   }
@@ -369,6 +382,7 @@
     state.fields = normalizedDraft.fields;
     state.rows = normalizedDraft.rows.length ? normalizedDraft.rows : [createEmptyRow()];
     state.calculationRules = normalizedDraft.calculationRules;
+    state.disabledAutoCalculationTargets = normalizedDraft.disabledAutoCalculationTargets;
     clearValidationState();
     ensureSharedRemarkState();
     return true;
@@ -441,6 +455,7 @@
     state.sharedRemark = "";
     state.fields = loadFields();
     state.calculationRules = [];
+    state.disabledAutoCalculationTargets = [];
     state.rows = [createEmptyRow()];
     clearValidationState();
     ensureSharedRemarkState();
@@ -1197,12 +1212,7 @@
     }
 
     if (action === "delete") {
-      const [removed] = state.fields.splice(index, 1);
-      state.rows.forEach((row) => {
-        delete getRowValues(row)[removed.key];
-      });
-      syncSharedRemarkFromRemovedField(removed);
-      pruneCalculationRules();
+      removeFieldByKey(state.fields[index].key);
     } else if (action === "up" && index > 0) {
       [state.fields[index - 1], state.fields[index]] = [state.fields[index], state.fields[index - 1]];
     } else if (action === "down" && index < state.fields.length - 1) {
@@ -1439,6 +1449,25 @@
 
   function pruneCalculationRules() {
     state.calculationRules = normalizeCalculationRules(state.calculationRules, state.fields);
+    state.disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, state.fields);
+  }
+
+  function removeFieldByKey(fieldKey) {
+    const index = state.fields.findIndex((field) => field.key === fieldKey);
+    if (index < 0) {
+      return null;
+    }
+
+    const [removed] = state.fields.splice(index, 1);
+    state.rows.forEach((row) => {
+      delete getRowValues(row)[removed.key];
+    });
+    syncSharedRemarkFromRemovedField(removed);
+    pruneCalculationRules();
+    state.invalidCells.clear();
+    state.invalidSharedFields.clear();
+    state.invalidFields.delete(removed.key);
+    return removed;
   }
 
   function addField() {
@@ -1462,6 +1491,10 @@
     render();
     scheduleDraftSave();
     setStatus("已添加表头", "success");
+  }
+
+  function getClientCalculationRules() {
+    return normalizeCalculationRules(state.calculationRules, state.fields).map((rule) => ({ ...rule }));
   }
 
   function addRow(copy) {
@@ -1514,7 +1547,7 @@
 
     const extractableFields = getNaturalFillFields();
     if (!extractableFields.length) {
-      setStatus("没有可智能填充的文本或数字表头", "warning");
+      setStatus("没有可智能处理的表头", "warning");
       return;
     }
 
@@ -1564,7 +1597,7 @@
 
     const fields = getNaturalFillFields();
     if (!fields.length) {
-      setStatus("没有可智能填充的文本或数字表头", "warning");
+      setStatus("没有可智能处理的表头", "warning");
       return;
     }
 
@@ -1573,17 +1606,18 @@
     setStatus("正在根据描述填写表格...", "success");
 
     try {
-      const result = await requestNaturalFillExtraction(text, fields);
+      const result = await requestNaturalFillExtraction(text, fields, getClientCalculationRules());
       const fieldChangeCount = applyNaturalFillFieldChanges(result.fieldChanges || []);
-      const ruleChangeCount = applyNaturalFillCalculationRules(result.calculationRules || []);
+      const ruleChangeCount = applyNaturalFillCalculationRuleChanges(
+        result.calculationRuleChanges || result.calculationRules || []
+      );
       const addedCount = appendNaturalFillRows(result.rows || []);
       if (!addedCount && !fieldChangeCount && !ruleChangeCount) {
         setStatus("未解析到可填写的数据", "warning");
         return;
       }
 
-      renderRows();
-      renderDraftPanel();
+      render();
       scheduleDraftSave();
       els.naturalFillText.value = "";
       closeNaturalFillPanel();
@@ -1598,7 +1632,6 @@
 
   function getNaturalFillFields() {
     return state.fields
-      .filter((field) => field.type !== "image" && !isRemarkField(field))
       .map((field) => ({
         key: field.key,
         label: field.label,
@@ -1611,8 +1644,24 @@
 
   function applyNaturalFillFieldChanges(changes) {
     let changedCount = 0;
-    (Array.isArray(changes) ? changes : []).forEach((change) => {
+    const normalizedChanges = Array.isArray(changes) ? changes : [];
+
+    normalizedChanges.forEach((change) => {
+      if (!change || change.action !== "delete") {
+        return;
+      }
+
+      if (removeFieldByKey(String(change.key || "").trim())) {
+        changedCount += 1;
+      }
+    });
+
+    normalizedChanges.forEach((change) => {
       if (!change || typeof change !== "object") {
+        return;
+      }
+
+      if (change.action === "delete") {
         return;
       }
 
@@ -1666,6 +1715,7 @@
       state.fields = normalizeFields(state.fields);
       state.rows = state.rows.map((row) => normalizeAppRow(row, state.fields));
       state.calculationRules = normalizeCalculationRules(state.calculationRules, state.fields);
+      state.disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, state.fields);
       ensureSharedRemarkState();
       syncRowsWithCurrentCalculations();
     }
@@ -1687,19 +1737,49 @@
     return key;
   }
 
-  function applyNaturalFillCalculationRules(rules) {
-    const normalizedRules = normalizeCalculationRules(rules, state.fields);
-    if (!normalizedRules.length) {
+  function applyNaturalFillCalculationRuleChanges(changes) {
+    const rawChanges = Array.isArray(changes) ? changes : [];
+    const fieldKeys = new Set(state.fields.map((field) => field.key));
+    const rulesByTarget = new Map(normalizeCalculationRules(state.calculationRules, state.fields).map((rule) => [rule.targetKey, rule]));
+    const disabledTargets = new Set(normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, state.fields));
+    let changedCount = 0;
+
+    rawChanges.forEach((change) => {
+      if (!change || typeof change !== "object") {
+        return;
+      }
+
+      const action = change.action === "delete" ? "delete" : change.action === "set" || !change.action ? "set" : "";
+      const targetKey = String(change.targetKey || "").trim();
+      if (!action || !fieldKeys.has(targetKey)) {
+        return;
+      }
+
+      if (action === "delete") {
+        rulesByTarget.delete(targetKey);
+        disabledTargets.add(targetKey);
+        changedCount += 1;
+        return;
+      }
+
+      const normalizedRule = normalizeCalculationRules([change], state.fields)[0];
+      if (!normalizedRule) {
+        return;
+      }
+
+      rulesByTarget.set(normalizedRule.targetKey, normalizedRule);
+      disabledTargets.delete(normalizedRule.targetKey);
+      changedCount += 1;
+    });
+
+    if (!changedCount) {
       return 0;
     }
 
-    const rulesByTarget = new Map(state.calculationRules.map((rule) => [rule.targetKey, rule]));
-    normalizedRules.forEach((rule) => {
-      rulesByTarget.set(rule.targetKey, rule);
-    });
     state.calculationRules = normalizeCalculationRules(Array.from(rulesByTarget.values()), state.fields);
+    state.disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(Array.from(disabledTargets), state.fields);
     syncRowsWithCurrentCalculations();
-    return normalizedRules.length;
+    return changedCount;
   }
 
   function syncRowsWithCurrentCalculations() {
@@ -1721,8 +1801,8 @@
     return `已智能处理：${parts.join("，")}`;
   }
 
-  async function requestNaturalFillExtraction(text, fields) {
-    const body = JSON.stringify({ text, fields });
+  async function requestNaturalFillExtraction(text, fields, calculationRules) {
+    const body = JSON.stringify({ text, fields, calculationRules: calculationRules || [] });
     let response = await fetchNaturalFillEndpoint(body);
 
     if (response.status === 401) {
@@ -1970,9 +2050,16 @@
     try {
       ensureSharedRemarkState();
       await flushDraftSave({ showSaved: false });
-      const blob = await createXlsxBlob(state.fields, state.rows, state.documentName, state.depositAmount, state.calculationRules);
+      const blob = await createXlsxBlob(
+        state.fields,
+        state.rows,
+        state.documentName,
+        state.depositAmount,
+        state.calculationRules,
+        state.disabledAutoCalculationTargets
+      );
       const filename = `自动生成表格_${formatTimestamp(new Date())}.xlsx`;
-      downloadBlob(blob, filename);
+      await downloadBlob(blob, filename);
       setStatus("Excel 已生成", "success");
     } catch (error) {
       setStatus(`生成失败：${error.message || "未知错误"}`, "error");
@@ -2213,18 +2300,22 @@
     return normalizeLabel(left.group) === normalizeLabel(right.group);
   }
 
-  function getCalculatedFields(fields, calculationRules) {
+  function getCalculatedFields(fields, calculationRules, disabledAutoTargets) {
     const calculatedFields = new Map();
+    const disabledTargets = new Set(normalizeDisabledAutoCalculationTargets(disabledAutoTargets || state.disabledAutoCalculationTargets, fields));
     const widthField = fields.find(isWidthField);
     const heightField = fields.find(isHeightField);
     const meterField = fields.find(isMeterField);
 
-    if (widthField && heightField && meterField) {
+    if (widthField && heightField && meterField && !disabledTargets.has(meterField.key)) {
       calculatedFields.set(meterField.key, makeCalculatedField("sum", fields, widthField, heightField));
     }
 
     fields.forEach((field, index) => {
       if (!isAmountField(field)) {
+        return;
+      }
+      if (disabledTargets.has(field.key)) {
         return;
       }
 
@@ -2386,11 +2477,47 @@
     }, 2600);
   }
 
-  function downloadBlob(blob, filename) {
-    if (root.navigator && /MicroMessenger/i.test(root.navigator.userAgent || "")) {
+  async function downloadBlob(blob, filename) {
+    if (shouldUseServerExportDownload()) {
+      try {
+        const downloadUrl = await createServerExportDownload(blob, filename);
+        root.location.href = downloadUrl;
+        return;
+      } catch (error) {
+        setStatus("正在使用浏览器下载方式，若无法打开请换系统浏览器重试。", "warning");
+      }
+    } else if (root.navigator && /MicroMessenger/i.test(root.navigator.userAgent || "")) {
       setStatus("微信内置浏览器可能拦截下载，请用系统浏览器打开后生成 Excel。", "warning");
     }
 
+    downloadBlobLocally(blob, filename);
+  }
+
+  function shouldUseServerExportDownload() {
+    return Boolean(root.location && /^https?:$/.test(root.location.protocol) && root.fetch);
+  }
+
+  async function createServerExportDownload(blob, filename) {
+    const response = await fetch(`${EXPORT_ENDPOINT}?filename=${encodeURIComponent(filename)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": MIME_XLSX,
+      },
+      body: blob,
+    });
+    let payload = null;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      payload = null;
+    }
+    if (!response.ok || !payload || !payload.url) {
+      throw new Error((payload && payload.error) || "无法创建下载链接");
+    }
+    return payload.url;
+  }
+
+  function downloadBlobLocally(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -2403,19 +2530,36 @@
     setTimeout(() => URL.revokeObjectURL(url), 1200);
   }
 
-  async function createXlsxBlob(fields, rows, documentName, depositAmount, calculationRules) {
+  async function createXlsxBlob(fields, rows, documentName, depositAmount, calculationRules, disabledAutoCalculationTargets) {
     const normalizedFields = normalizeFields(fields).filter((field) => field.label.trim());
     const normalizedRows = Array.isArray(rows) ? rows.map((row) => normalizeAppRow(row, normalizedFields)) : [];
     const normalizedRules = normalizeCalculationRules(calculationRules, normalizedFields);
+    const normalizedDisabledTargets = normalizeDisabledAutoCalculationTargets(disabledAutoCalculationTargets, normalizedFields);
     const images = collectWorksheetImages(normalizedFields, normalizedRows);
-    const xmlFiles = buildWorkbookFiles(normalizedFields, normalizedRows, images, documentName, depositAmount, normalizedRules);
+    const xmlFiles = buildWorkbookFiles(
+      normalizedFields,
+      normalizedRows,
+      images,
+      documentName,
+      depositAmount,
+      normalizedRules,
+      normalizedDisabledTargets
+    );
     const zipBytes = createZip(xmlFiles);
     return new Blob([zipBytes], { type: MIME_XLSX });
   }
 
-  function buildWorkbookFiles(fields, rows, images, documentName, depositAmount, calculationRules) {
+  function buildWorkbookFiles(fields, rows, images, documentName, depositAmount, calculationRules, disabledAutoCalculationTargets) {
     const worksheetImages = Array.isArray(images) ? images : collectWorksheetImages(fields, rows);
-    const sheetXml = buildSheetXml(fields, rows, worksheetImages, documentName, depositAmount, calculationRules);
+    const sheetXml = buildSheetXml(
+      fields,
+      rows,
+      worksheetImages,
+      documentName,
+      depositAmount,
+      calculationRules,
+      disabledAutoCalculationTargets
+    );
     const contentTypes = buildContentTypesXml(worksheetImages);
     const worksheetRelationships = worksheetImages.length ? buildWorksheetRelsXml() : null;
     const files = [
@@ -2566,8 +2710,8 @@ ${anchors}\
 </xdr:oneCellAnchor>`;
   }
 
-  function buildSheetXml(fields, rows, images, documentName, depositAmount, calculationRules) {
-    const calculatedFields = getCalculatedFields(fields, calculationRules);
+  function buildSheetXml(fields, rows, images, documentName, depositAmount, calculationRules, disabledAutoCalculationTargets) {
+    const calculatedFields = getCalculatedFields(fields, calculationRules, disabledAutoCalculationTargets);
     const worksheetImages = Array.isArray(images) ? images : [];
     const sharedRemarkField = getSharedRemarkField(fields);
     const sharedRemarkIndex = sharedRemarkField ? fields.indexOf(sharedRemarkField) : -1;
@@ -3257,6 +3401,7 @@ ${drawing}\
     isCustomRow,
     getCalculatedFields,
     normalizeFields,
+    normalizeCalculationRules,
     dateToExcelSerial,
     columnName,
   };
