@@ -1613,7 +1613,13 @@
       );
       const addedCount = appendNaturalFillRows(result.rows || []);
       if (!addedCount && !fieldChangeCount && !ruleChangeCount) {
-        setStatus("未解析到可填写的数据", "warning");
+        const hasStructuralIntent = hasNaturalFillStructuralIntent(text);
+        setStatus(
+          hasStructuralIntent
+            ? "未解析到表头或规则变更，请确认线上后端已部署最新版后重试"
+            : "未解析到可填写的数据",
+          "warning"
+        );
         return;
       }
 
@@ -1640,6 +1646,10 @@
         options: field.options,
         required: field.required,
       }));
+  }
+
+  function hasNaturalFillStructuralIntent(text) {
+    return /(删除|删掉|移除|去掉|取消|不要|新增|添加|增加|改名|改成|修改|更改|规则|计算|公式|自动计算|字段|表头)/.test(String(text || ""));
   }
 
   function applyNaturalFillFieldChanges(changes) {
