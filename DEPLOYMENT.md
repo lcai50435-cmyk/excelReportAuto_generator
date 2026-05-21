@@ -1,13 +1,31 @@
-# Node Hosting Deployment
+# Edgefunc / Node Hosting Deployment
 
-This project can run as a hosted Node.js app. The browser talks to the same
-origin for both the page and the AI endpoint, while the AI provider key stays on
-the server.
+This project now separates the app into a generic Fetch-style edge handler and a
+small Node.js local adapter. The browser talks to the same origin for the page,
+the AI endpoint, and export downloads, while the AI provider key stays on the
+server.
+
+## Edgefunc Entry
+
+The edge-compatible entry is `src/server/edge-handler.js`.
+
+```js
+import { fetch } from "./src/server/edge-handler.js";
+```
+
+The exported `fetch(request, env)` function accepts standard Web `Request`
+objects and returns standard Web `Response` objects. The `env` object uses the
+same variable names as `.env` and hosted Node deployments.
+
+The local `server.js` file only adapts Node `http` requests into that Fetch
+handler and serves static files for local/Node hosting.
 
 ## Recommended Platform
 
 Use a Node.js hosting platform such as Zeabur, Render, Railway, or Fly.io. For
-small private use with an `.eu.cc` domain, Zeabur is the simplest fit.
+small private use with an `.eu.cc` domain, Zeabur is the simplest fit. For edge
+platforms, wire incoming requests to `fetch(request, env)` and serve the static
+files from the repository root.
 
 ## Required Environment Variables
 
