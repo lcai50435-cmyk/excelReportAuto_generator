@@ -15,6 +15,7 @@ const IS_PRODUCTION = NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 4173);
 const MAX_BODY_BYTES = 1024 * 1024;
+const DOUBAO_TIMEOUT_MS = Number(process.env.DOUBAO_TIMEOUT_MS || 25000);
 const MAX_EXPORT_BYTES = Number(process.env.MAX_EXPORT_BYTES || 30 * 1024 * 1024);
 const EXPORT_TTL_MS = Number(process.env.EXPORT_TTL_MS || 10 * 60 * 1000);
 const EXPORT_MAX_ITEMS = Number(process.env.EXPORT_MAX_ITEMS || 50);
@@ -143,6 +144,12 @@ async function handleNaturalFillExtract(request, response) {
   }
 
   const calculationRules = normalizeCalculationRules(payload.calculationRules, fields);
+  const localStructuralResult = extractLocalStructuralChanges(payload.text, fields, calculationRules);
+  if (hasLocalStructuralResult(localStructuralResult)) {
+    sendJson(response, 200, localStructuralResult);
+    return;
+  }
+
   const prompt = buildEnhancedExtractionPrompt(fields, calculationRules, payload.text);
   const doubaoPayload = {
     model,
@@ -160,6 +167,8 @@ async function handleNaturalFillExtract(request, response) {
   }
 
   let upstreamResponse;
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  const timeout = controller ? setTimeout(() => controller.abort(), DOUBAO_TIMEOUT_MS) : 0;
   try {
     upstreamResponse = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -168,10 +177,19 @@ async function handleNaturalFillExtract(request, response) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(doubaoPayload),
+      signal: controller ? controller.signal : undefined,
     });
   } catch (error) {
+    if (error && (error.name === "AbortError" || /abort|timeout/i.test(error.message || ""))) {
+      sendJson(response, 504, { error: "豆包服务响应超时，请稍后重试或先使用更简单的表头/规则指令" });
+      return;
+    }
     sendJson(response, 502, { error: `无法连接豆包服务：${error.message || "网络错误"}` });
     return;
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
   }
 
   const upstreamText = await upstreamResponse.text();
@@ -446,6 +464,103 @@ function normalizeCalculationRuleChanges(changes, legacyRules, fields, currentRu
     })
     .filter(Boolean)
     .slice(0, 20);
+}
+
+function extractLocalStructuralChanges(text, fields, calculationRules) {
+  const sourceText = String(text || "").trim();
+  const result = {
+    rows: [],
+    fieldChanges: [],
+    calculationRuleChanges: [],
+    calculationRules: [],
+    warnings: [],
+  };
+
+  if (!sourceText) {
+    return result;
+  }
+
+  const matchedFields = findFieldsMentionedInText(sourceText, fields);
+  if (isDeleteHeaderRequest(sourceText, matchedFields) && !isDeleteCalculationRequest(sourceText)) {
+    matchedFields.forEach((field) => {
+      result.fieldChanges.push({ action: "delete", key: field.key });
+    });
+    if (!result.fieldChanges.length && hasHeaderIntent(sourceText)) {
+      result.warnings.push("未找到要删除的表头，请尽量使用当前表头名称。");
+    }
+  }
+
+  if (isDeleteCalculationRequest(sourceText)) {
+    const targets = matchedFields.length
+      ? matchedFields
+      : normalizeCalculationRules(calculationRules, fields)
+          .map((rule) => fields.find((field) => field.key === rule.targetKey))
+          .filter(Boolean);
+    targets.forEach((field) => {
+      result.calculationRuleChanges.push({ action: "delete", targetKey: field.key });
+    });
+    if (!result.calculationRuleChanges.length) {
+      result.warnings.push("未找到要取消的计算规则，请尽量使用目标表头名称。");
+    }
+  }
+
+  result.fieldChanges = dedupeChangesByKey(result.fieldChanges, "key");
+  result.calculationRuleChanges = dedupeChangesByKey(result.calculationRuleChanges, "targetKey");
+  return result;
+}
+
+function hasLocalStructuralResult(result) {
+  return Boolean(result && (
+    (Array.isArray(result.fieldChanges) && result.fieldChanges.length) ||
+    (Array.isArray(result.calculationRuleChanges) && result.calculationRuleChanges.length)
+  ));
+}
+
+function findFieldsMentionedInText(text, fields) {
+  const normalizedText = normalizeText(text);
+  if (!normalizedText) {
+    return [];
+  }
+
+  return fields.filter((field) => {
+    const label = normalizeText(field.label);
+    const group = normalizeText(field.group);
+    const key = normalizeText(field.key);
+    const fullLabel = normalizeText(`${field.group || ""}${field.label || ""}`);
+    return (label && normalizedText.includes(label)) ||
+      (fullLabel && normalizedText.includes(fullLabel)) ||
+      (group && label && normalizedText.includes(`${group}${label}`)) ||
+      (key && normalizedText.includes(key));
+  });
+}
+
+function isDeleteHeaderRequest(text, matchedFields) {
+  const normalized = normalizeText(text);
+  const hasDeleteWord = /(删除|删掉|移除|去掉|不要|取消)/.test(text) || /(delete|remove|drop)/i.test(normalized);
+  return hasDeleteWord && ((Array.isArray(matchedFields) && matchedFields.length > 0) || /(字段|表头|列|栏)/.test(text)) ||
+    /(delete|remove|drop).*(field|header|column)/i.test(normalized);
+}
+
+function hasHeaderIntent(text) {
+  return /(字段|表头|列|栏|field|header|column)/i.test(text);
+}
+
+function isDeleteCalculationRequest(text) {
+  const normalized = normalizeText(text);
+  return /(取消|删除|删掉|移除|去掉|不要|关闭|禁用)/.test(text) && /(计算|规则|公式|自动计算)/.test(text) ||
+    /(disable|cancel|delete|remove).*(calculation|formula|rule)/i.test(normalized);
+}
+
+function dedupeChangesByKey(changes, keyName) {
+  const seen = new Set();
+  return changes.filter((change) => {
+    const key = change && change[keyName];
+    if (!key || seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function normalizeCalculationRules(rules, fields) {

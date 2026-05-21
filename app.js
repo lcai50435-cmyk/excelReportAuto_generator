@@ -1958,6 +1958,9 @@
   }
 
   function getNaturalFillHttpError(status) {
+    if (status === 504 || status === 524) {
+      return "智能填行服务响应超时，请稍后重试；删除字段、取消规则等简单指令请确认线上后端已更新";
+    }
     if (status === 404) {
       return "当前页面不是由智能填行服务打开，请使用服务启动后显示的地址访问后再智能填行";
     }
