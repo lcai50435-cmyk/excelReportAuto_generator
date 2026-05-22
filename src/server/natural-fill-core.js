@@ -445,7 +445,14 @@ function normalizeUpstreamError(text) {
       return parsed.message;
     }
   } catch (error) {
-    return String(text || "").slice(0, 180);
+    const raw = String(text || "").trim();
+    if (/^https?:\/\/account\.siliconflow\.cn\/login/i.test(raw)) {
+      return "SiliconFlow Base URL 配错了，请使用 https://api.siliconflow.cn/v1，不要使用 cloud.siliconflow.cn 控制台地址";
+    }
+    if (/<!doctype html|<html/i.test(raw)) {
+      return "大模型服务返回了网页而不是 API JSON，请检查 Base URL 是否填写为 API 地址";
+    }
+    return raw.slice(0, 180);
   }
   return "";
 }

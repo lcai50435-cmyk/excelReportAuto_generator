@@ -10,11 +10,32 @@ if errorlevel 1 (
   exit /b 1
 )
 
+if not exist node_modules (
+  echo Installing dependencies...
+  npm install
+  if errorlevel 1 (
+    echo npm install failed.
+    pause
+    exit /b 1
+  )
+)
+
+if not exist .next (
+  echo Building Next.js app...
+  npm run build
+  if errorlevel 1 (
+    echo Build failed.
+    pause
+    exit /b 1
+  )
+)
+
 echo Starting Excel tool...
 echo Keep this window open while using smart fill.
 echo.
 
-start "Open Excel tool" cmd /c "timeout /t 2 /nobreak >nul && rundll32 url.dll,FileProtocolHandler http://127.0.0.1:4173/"
+start "Open Excel tool" cmd /c "timeout /t 3 /nobreak >nul && rundll32 url.dll,FileProtocolHandler http://127.0.0.1:4173/"
 
-node server.js
+set PORT=4173
+npm start
 pause

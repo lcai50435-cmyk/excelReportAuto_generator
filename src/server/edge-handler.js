@@ -1,8 +1,9 @@
 import { createRuntimeConfig } from "./config.js";
-import { EXPORT_PATH_PREFIX, SKILL_PATH } from "./constants.js";
+import { EXPORT_PATH_PREFIX, LLM_CONFIG_API_PATH, SKILL_PATH } from "./constants.js";
 import { createCorsHeaders, isRequestOriginAllowed } from "./cors.js";
 import { createExportStore } from "./export-store.js";
 import { handleExportCreate, handleExportDownload, isExportDownloadPath } from "./exports.js";
+import { handleLlmConfigGet, handleLlmConfigSave } from "./llm-config.js";
 import { handleNaturalFillExtract } from "./natural-fill.js";
 import { createRateLimiter } from "./rate-limit.js";
 import { emptyResponse, jsonResponse } from "./response.js";
@@ -30,6 +31,16 @@ function createFetchHandler(options = {}) {
           return withCors(jsonResponse(403, { error: "Origin is not allowed" }), cors.headers);
         }
         return withCors(await handleNaturalFillExtract(request, context), cors.headers);
+      }
+
+      if ((request.method === "GET" || request.method === "POST") && url.pathname === LLM_CONFIG_API_PATH) {
+        if (!cors.allowed || !isRequestOriginAllowed(request, config)) {
+          return withCors(jsonResponse(403, { error: "Origin is not allowed" }), cors.headers);
+        }
+        const response = request.method === "GET"
+          ? await handleLlmConfigGet(request, context)
+          : await handleLlmConfigSave(request, context);
+        return withCors(response, cors.headers);
       }
 
       if (request.method === "POST" && url.pathname === EXPORT_PATH_PREFIX) {
