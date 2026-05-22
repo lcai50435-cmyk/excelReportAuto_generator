@@ -3,9 +3,9 @@ import path from "node:path";
 
 import { DEFAULT_DOUBAO_BASE_URL } from "./constants.js";
 
-const DEFAULT_LLM_TIMEOUT_MS = 25000;
+const DEFAULT_LLM_TIMEOUT_MS = 60000;
 const MIN_LLM_TIMEOUT_MS = 5000;
-const MAX_LLM_TIMEOUT_MS = 120000;
+const MAX_LLM_TIMEOUT_MS = 180000;
 const DEFAULT_CONFIG_PATH = path.join(process.cwd(), "data", "llm-config.json");
 
 function getConfigPath() {

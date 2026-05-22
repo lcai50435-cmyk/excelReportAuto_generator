@@ -28,7 +28,7 @@ The LLM settings are configured from the web UI after login:
 - Base URL
 - Model name
 - API Key
-- Timeout
+- Timeout, default 60000ms
 
 They are saved on the server to `data/llm-config.json` by default. Use `LLM_CONFIG_PATH=/secure/path/llm-config.json` if you want to store it elsewhere.
 
