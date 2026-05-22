@@ -28,6 +28,8 @@ export function startExcelAutoTool() {
   "use strict";
 
   const root = typeof window !== "undefined" ? window : globalThis;
+  const METER_CALCULATION_MODES = ["add", "multiply", "manual"];
+
   let state = {
     documentName: "",
     depositAmount: "",
@@ -39,6 +41,7 @@ export function startExcelAutoTool() {
     invalidFields: new Set(),
     calculationRules: [],
     disabledAutoCalculationTargets: [],
+    meterCalculationMode: "add",
     configOpen: false,
     drafts: [],
     activeDraftId: "",
@@ -153,6 +156,10 @@ export function startExcelAutoTool() {
         return { targetKey, sourceKeys, operator };
       })
       .filter(Boolean);
+  }
+
+  function normalizeMeterCalculationMode(mode) {
+    return METER_CALCULATION_MODES.includes(mode) ? mode : "add";
   }
 
   function normalizeDisabledAutoCalculationTargets(targets, fields) {
@@ -291,6 +298,7 @@ export function startExcelAutoTool() {
     const updatedAt = Number.isFinite(Number(draft.updatedAt)) ? Number(draft.updatedAt) : Date.now();
     const calculationRules = normalizeCalculationRules(draft.calculationRules, fields);
     const disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(draft.disabledAutoCalculationTargets, fields);
+    const meterCalculationMode = normalizeMeterCalculationMode(draft.meterCalculationMode);
 
     return {
       id: String(draft.id || makeDraftId()),
@@ -303,6 +311,7 @@ export function startExcelAutoTool() {
       rows,
       calculationRules,
       disabledAutoCalculationTargets,
+      meterCalculationMode,
       version: Number(draft.version) || DRAFT_VERSION,
     };
   }
@@ -321,6 +330,7 @@ export function startExcelAutoTool() {
     const updatedAt = Date.now();
     const calculationRules = normalizeCalculationRules(state.calculationRules, fields);
     const disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, fields);
+    const meterCalculationMode = normalizeMeterCalculationMode(state.meterCalculationMode);
 
     return {
       id: state.activeDraftId || makeDraftId(),
@@ -333,6 +343,7 @@ export function startExcelAutoTool() {
       rows,
       calculationRules,
       disabledAutoCalculationTargets,
+      meterCalculationMode,
       version: DRAFT_VERSION,
     };
   }
@@ -376,6 +387,8 @@ export function startExcelAutoTool() {
     state.rows = normalizedDraft.rows.length ? normalizedDraft.rows : [createEmptyRow()];
     state.calculationRules = normalizedDraft.calculationRules;
     state.disabledAutoCalculationTargets = normalizedDraft.disabledAutoCalculationTargets;
+    state.meterCalculationMode = normalizedDraft.meterCalculationMode;
+    syncMeterCalculationModeFromRules();
     clearValidationState();
     ensureSharedRemarkState();
     return true;
@@ -396,6 +409,17 @@ export function startExcelAutoTool() {
   function syncDepositAmountInput() {
     if (els.depositAmount && els.depositAmount.value !== state.depositAmount) {
       els.depositAmount.value = state.depositAmount;
+    }
+  }
+
+  function syncMeterCalculationModeInput() {
+    if (!els.meterCalculationMode) {
+      return;
+    }
+
+    const mode = getMeterCalculationMode();
+    if (els.meterCalculationMode.value !== mode) {
+      els.meterCalculationMode.value = mode;
     }
   }
 
@@ -449,6 +473,7 @@ export function startExcelAutoTool() {
     state.fields = loadFields();
     state.calculationRules = [];
     state.disabledAutoCalculationTargets = [];
+    state.meterCalculationMode = "add";
     state.rows = [createEmptyRow()];
     clearValidationState();
     ensureSharedRemarkState();
@@ -630,6 +655,7 @@ export function startExcelAutoTool() {
       llmTimeoutMs: document.getElementById("llmTimeoutMs"),
       llmConfigStatus: document.getElementById("llmConfigStatus"),
       llmConfigCancelBtn: document.getElementById("llmConfigCancelBtn"),
+      meterCalculationMode: document.getElementById("meterCalculationMode"),
       rowList: document.getElementById("rowList"),
       status: document.getElementById("status"),
       sharedRemarkPanel: document.getElementById("sharedRemarkPanel"),
@@ -649,6 +675,7 @@ export function startExcelAutoTool() {
       els.depositAmount.addEventListener("input", handleDepositAmountInput);
       els.depositAmount.addEventListener("change", handleDepositAmountInput);
     }
+    els.meterCalculationMode.addEventListener("change", handleMeterCalculationModeChange);
 
     els.toggleConfigBtn.addEventListener("click", toggleConfigPanel);
     els.addFieldBtn.addEventListener("click", addField);
@@ -695,6 +722,7 @@ export function startExcelAutoTool() {
   function render() {
     syncDocumentNameInput();
     syncDepositAmountInput();
+    syncMeterCalculationModeInput();
     renderDraftPanel();
     renderFields();
     renderSharedRemark();
@@ -1214,7 +1242,8 @@ export function startExcelAutoTool() {
     if (calculatedField && !isCustomRow(row)) {
       const calculatedValue = calculateFieldValue(row, calculatedField);
       const displayValue = calculatedValue === "" ? "" : formatCalculatedValue(calculatedValue);
-      return `<label class="calculated-label">${label}<input type="number" step="any" min="0" readonly data-row-index="${rowIndex}" data-calculated-field-key="${escapeAttr(field.key)}" class="${invalidClass}" value="${escapeAttr(displayValue)}" placeholder="自动计算" title="自动计算"></label>`;
+      const calculatedLabelClass = isMeterField(field) ? "calculated-label meter-calculated-label" : "calculated-label";
+      return `<label class="${calculatedLabelClass}">${label}<input type="number" step="any" min="0" readonly data-row-index="${rowIndex}" data-calculated-field-key="${escapeAttr(field.key)}" class="${invalidClass}" value="${escapeAttr(displayValue)}" placeholder="自动计算" title="自动计算"></label>`;
     }
 
     if (field.type === "select") {
@@ -1341,6 +1370,16 @@ export function startExcelAutoTool() {
     state.depositAmount = value;
     renderDraftPanel();
     scheduleDraftSave();
+  }
+
+  function handleMeterCalculationModeChange(event) {
+    state.meterCalculationMode = normalizeMeterCalculationMode(event.target.value);
+    clearMeterCalculationOverrides();
+    syncRowsWithCurrentCalculations();
+    renderRows();
+    renderDraftPanel();
+    scheduleDraftSave();
+    setStatus("已更新米数计算方式", "success");
   }
 
   function handleFieldInput(event) {
@@ -1498,6 +1537,9 @@ export function startExcelAutoTool() {
   function handleRowInput(event) {
     const target = event.target;
     if (target.dataset.imageInput === "true") {
+      return;
+    }
+    if (target.dataset.calculatedFieldKey) {
       return;
     }
 
@@ -1705,7 +1747,13 @@ export function startExcelAutoTool() {
   }
 
   function getClientCalculationRules() {
-    return normalizeCalculationRules(state.calculationRules, state.fields).map((rule) => ({ ...rule }));
+    const rules = normalizeCalculationRules(state.calculationRules, state.fields);
+    const defaultMeterRule = getDefaultMeterCalculationRule(state.fields);
+    const hasMeterRule = defaultMeterRule && rules.some((rule) => rule.targetKey === defaultMeterRule.targetKey);
+    const clientRules = defaultMeterRule && !hasMeterRule
+      ? rules.concat(defaultMeterRule)
+      : rules;
+    return clientRules.map((rule) => ({ ...rule }));
   }
 
   function addRow(copy) {
@@ -2003,6 +2051,7 @@ export function startExcelAutoTool() {
 
     state.calculationRules = normalizeCalculationRules(Array.from(rulesByTarget.values()), state.fields);
     state.disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(Array.from(disabledTargets), state.fields);
+    syncMeterCalculationModeFromRules();
     syncRowsWithCurrentCalculations();
     return changedCount;
   }
@@ -2302,6 +2351,86 @@ export function startExcelAutoTool() {
     return normalized.includes("金额") || normalizeKey(field).includes("amount");
   }
 
+  function getMeterCalculationMode() {
+    return normalizeMeterCalculationMode(state.meterCalculationMode);
+  }
+
+  function getCalculationRuleSignature(rule) {
+    return rule && rule.targetKey && Array.isArray(rule.sourceKeys)
+      ? `${rule.targetKey}|${rule.sourceKeys.join("|")}`
+      : "";
+  }
+
+  function getMeterCalculationRuleKey(fields) {
+    const targetFields = fields || state.fields;
+    const widthField = targetFields.find(isWidthField);
+    const heightField = targetFields.find(isHeightField);
+    const meterField = targetFields.find(isMeterField);
+    if (!widthField || !heightField || !meterField) {
+      return "";
+    }
+
+    return getCalculationRuleSignature({
+      targetKey: meterField.key,
+      sourceKeys: [widthField.key, heightField.key],
+    });
+  }
+
+  function syncMeterCalculationModeFromRules() {
+    const ruleKey = getMeterCalculationRuleKey(state.fields);
+    if (!ruleKey) {
+      return;
+    }
+
+    const matchingRule = normalizeCalculationRules(state.calculationRules, state.fields)
+      .find((rule) => getCalculationRuleSignature(rule) === ruleKey);
+    if (matchingRule && (matchingRule.operator === "add" || matchingRule.operator === "multiply")) {
+      state.meterCalculationMode = matchingRule.operator;
+      syncMeterCalculationModeInput();
+      return;
+    }
+
+    const meterField = state.fields.find(isMeterField);
+    const disabledTargets = new Set(normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, state.fields));
+    if (meterField && disabledTargets.has(meterField.key)) {
+      state.meterCalculationMode = "manual";
+      syncMeterCalculationModeInput();
+    }
+  }
+
+  function clearMeterCalculationOverrides() {
+    const meterField = state.fields.find(isMeterField);
+    if (!meterField) {
+      return;
+    }
+
+    state.calculationRules = normalizeCalculationRules(state.calculationRules, state.fields)
+      .filter((rule) => rule.targetKey !== meterField.key);
+    state.disabledAutoCalculationTargets = normalizeDisabledAutoCalculationTargets(state.disabledAutoCalculationTargets, state.fields)
+      .filter((key) => key !== meterField.key);
+  }
+
+  function getDefaultMeterCalculationRule(fields) {
+    const mode = getMeterCalculationMode();
+    if (mode === "manual") {
+      return null;
+    }
+
+    const targetFields = fields || state.fields;
+    const widthField = targetFields.find(isWidthField);
+    const heightField = targetFields.find(isHeightField);
+    const meterField = targetFields.find(isMeterField);
+    if (!widthField || !heightField || !meterField) {
+      return null;
+    }
+
+    return {
+      targetKey: meterField.key,
+      sourceKeys: [widthField.key, heightField.key],
+      operator: mode === "multiply" ? "multiply" : "add",
+    };
+  }
+
   function isCustomTypeFallbackField(field) {
     return isTypeField(field) || isNameField(field) || isModelField(field);
   }
@@ -2316,9 +2445,10 @@ export function startExcelAutoTool() {
     const widthField = fields.find(isWidthField);
     const heightField = fields.find(isHeightField);
     const meterField = fields.find(isMeterField);
+    const defaultMeterRule = getDefaultMeterCalculationRule(fields);
 
-    if (widthField && heightField && meterField && !disabledTargets.has(meterField.key)) {
-      calculatedFields.set(meterField.key, makeCalculatedField("sum", fields, widthField, heightField));
+    if (widthField && heightField && meterField && defaultMeterRule && !disabledTargets.has(meterField.key)) {
+      calculatedFields.set(meterField.key, makeCalculatedField(defaultMeterRule.operator, fields, widthField, heightField));
     }
 
     fields.forEach((field, index) => {

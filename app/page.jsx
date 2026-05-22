@@ -90,6 +90,13 @@ export default function Page() {
             <label>定金
               <input id="depositAmount" type="number" step="any" min="0" inputMode="decimal" placeholder="请输入定金" />
             </label>
+            <label>米数计算方式
+              <select id="meterCalculationMode" defaultValue="add">
+                <option value="add">宽 + 高</option>
+                <option value="multiply">宽 × 高</option>
+                <option value="manual">自己填写</option>
+              </select>
+            </label>
           </div>
           <div className="shared-remark-panel" id="sharedRemarkPanel" hidden></div>
           <div className="row-list" id="rowList">
