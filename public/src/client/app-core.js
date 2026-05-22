@@ -858,7 +858,7 @@ export function startExcelAutoTool() {
     }
     els.llmBaseUrl.value = config.baseUrl || "https://ark.cn-beijing.volces.com/api/v3";
     els.llmModel.value = config.model || "";
-    els.llmTimeoutMs.value = String(config.timeoutMs || 25000);
+    els.llmTimeoutMs.value = String(config.timeoutMs || 60000);
     els.llmApiKey.value = "";
     els.llmApiKey.placeholder = config.hasApiKey ? "已保存，留空表示不修改" : "请输入 API Key";
   }

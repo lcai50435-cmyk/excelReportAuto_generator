@@ -41,7 +41,7 @@ async function handleNaturalFillExtract(request, context) {
     return jsonResponse(500, { error: "请先在大模型配置中填写 Base URL、模型名称和 API Key" });
   }
 
-  const fields = normalizeRequestFields(payload.fields);
+  const fields = normalizeRequestFields(payload.fields).slice(0, 80);
   if (!fields.length) {
     return jsonResponse(400, { error: "缺少可填充字段" });
   }
@@ -52,7 +52,7 @@ async function handleNaturalFillExtract(request, context) {
     return jsonResponse(200, localStructuralResult);
   }
 
-  const prompt = buildEnhancedExtractionPrompt(fields, calculationRules, payload.text);
+  const prompt = buildEnhancedExtractionPrompt(selectPromptFields(fields, payload.text), calculationRules, payload.text);
   const doubaoPayload = {
     model: llmConfig.model,
     temperature: 0,
@@ -83,9 +83,9 @@ async function handleNaturalFillExtract(request, context) {
     });
   } catch (error) {
     if (error && (error.name === "AbortError" || /abort|timeout/i.test(error.message || ""))) {
-      return jsonResponse(504, { error: "豆包服务响应超时，请稍后重试或先使用更简单的表头/规则指令" });
+      return jsonResponse(504, { error: "大模型响应超时：请减少一次输入内容，或在大模型配置里把超时调到 60000-120000ms；填东西本身不会超时，复杂理解才容易超时" });
     }
-    return jsonResponse(502, { error: `无法连接豆包服务：${error.message || "网络错误"}` });
+    return jsonResponse(502, { error: `无法连接大模型服务：${error.message || "网络错误"}` });
   } finally {
     if (timeout) {
       clearTimeout(timeout);
@@ -95,24 +95,67 @@ async function handleNaturalFillExtract(request, context) {
   const upstreamText = await upstreamResponse.text();
   if (!upstreamResponse.ok) {
     return jsonResponse(upstreamResponse.status >= 500 ? 502 : upstreamResponse.status, {
-      error: normalizeUpstreamError(upstreamText) || `豆包服务返回 ${upstreamResponse.status}`,
+      error: normalizeUpstreamError(upstreamText) || `大模型服务返回 ${upstreamResponse.status}`,
     });
   }
 
   const rawContent = extractMessageContent(upstreamText);
   if (!rawContent) {
-    return jsonResponse(502, { error: "豆包服务没有返回可解析内容" });
+    return jsonResponse(502, { error: "大模型服务没有返回可解析内容" });
   }
 
   let extracted;
   try {
     extracted = JSON.parse(extractJsonText(rawContent));
   } catch (error) {
-    return jsonResponse(502, { error: "豆包返回内容不是有效 JSON" });
+    return jsonResponse(502, { error: "大模型返回内容不是有效 JSON" });
   }
 
   const result = normalizeExtractionResult(extracted, fields, calculationRules);
   return jsonResponse(200, result);
+}
+
+function selectPromptFields(fields, text) {
+  const normalizedText = normalizeTextForPrompt(text);
+  if (!normalizedText || fields.length <= 40) {
+    return fields;
+  }
+
+  const scored = fields.map((field, index) => {
+    const label = normalizeTextForPrompt(`${field.group || ""}${field.label || ""}`);
+    const key = normalizeTextForPrompt(field.key);
+    let score = 0;
+    if (label && normalizedText.includes(label)) {
+      score += 12;
+    }
+    if (key && normalizedText.includes(key)) {
+      score += 8;
+    }
+    if (field.type === "image") {
+      score -= 10;
+    }
+    if (field.required) {
+      score += 2;
+    }
+    return { field, index, score };
+  });
+
+  const selected = scored
+    .filter((item) => item.score > 0)
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, 40)
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.field);
+
+  if (selected.length >= 6) {
+    return selected;
+  }
+
+  return fields.filter((field) => field.type !== "image").slice(0, 40);
+}
+
+function normalizeTextForPrompt(value) {
+  return String(value || "").replace(/\s+/g, "").replace(/[()（）]/g, "").toLowerCase();
 }
 
 export { handleNaturalFillExtract };

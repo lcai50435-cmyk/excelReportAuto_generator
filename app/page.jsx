@@ -43,7 +43,7 @@ export default function Page() {
               <input id="llmApiKey" type="password" placeholder="请输入 API Key" autoComplete="off" />
             </label>
             <label>超时毫秒
-              <input id="llmTimeoutMs" type="number" min="5000" max="120000" step="1000" placeholder="25000" />
+              <input id="llmTimeoutMs" type="number" min="5000" max="180000" step="1000" placeholder="60000" />
             </label>
           </div>
           <div className="llm-config-actions">
