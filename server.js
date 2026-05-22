@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { createRuntimeConfig } from "./src/server/config.js";
 import { fetch as edgeFetch } from "./src/server/edge-handler.js";
-import { EXPORT_PATH_PREFIX, SKILL_PATH } from "./src/server/constants.js";
+import { EXPORT_PATH_PREFIX, LLM_CONFIG_API_PATH, SKILL_PATH } from "./src/server/constants.js";
 import { toWebRequest, writeWebResponse } from "./src/server/node-adapter.js";
 import { loadEnvFile } from "./src/server/node-env.js";
 import { serveStatic } from "./src/server/node-static.js";
@@ -54,6 +54,9 @@ function shouldHandleWithEdge(request, url) {
     return true;
   }
   if (request.method === "POST" && url.pathname === SKILL_PATH) {
+    return true;
+  }
+  if ((request.method === "GET" || request.method === "POST") && url.pathname === LLM_CONFIG_API_PATH) {
     return true;
   }
   if (request.method === "POST" && url.pathname === EXPORT_PATH_PREFIX) {

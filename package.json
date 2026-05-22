@@ -2,12 +2,20 @@
   "name": "excel-ai-tool",
   "version": "1.0.0",
   "private": true,
-  "description": "Excel smart fill tool with a server-side AI proxy.",
+  "description": "Excel smart fill tool built with Next.js and a server-side AI proxy.",
   "type": "module",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "start:legacy": "node server.js"
+  },
+  "dependencies": {
+    "next": "^15.3.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }

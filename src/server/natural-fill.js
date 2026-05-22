@@ -12,6 +12,7 @@ import {
   shouldDisableThinking,
   validateExtractPayload,
 } from "./natural-fill-core.js";
+import { getEffectiveLlmConfig } from "./llm-config-store.js";
 import { jsonResponse } from "./response.js";
 import { validateAppPassword } from "./security.js";
 
@@ -35,12 +36,9 @@ async function handleNaturalFillExtract(request, context) {
     return jsonResponse(400, { error: validation.error });
   }
 
-  if (!config.doubaoApiKey) {
-    return jsonResponse(500, { error: "请先设置 DOUBAO_API_KEY 环境变量" });
-  }
-
-  if (!config.doubaoModel) {
-    return jsonResponse(500, { error: "请先设置 DOUBAO_MODEL 环境变量" });
+  const llmConfig = await getEffectiveLlmConfig(config);
+  if (!llmConfig.apiKey || !llmConfig.model || !llmConfig.baseUrl) {
+    return jsonResponse(500, { error: "请先在大模型配置中填写 Base URL、模型名称和 API Key" });
   }
 
   const fields = normalizeRequestFields(payload.fields);
@@ -56,7 +54,7 @@ async function handleNaturalFillExtract(request, context) {
 
   const prompt = buildEnhancedExtractionPrompt(fields, calculationRules, payload.text);
   const doubaoPayload = {
-    model: config.doubaoModel,
+    model: llmConfig.model,
     temperature: 0,
     response_format: { type: "json_object" },
     messages: [
@@ -66,18 +64,18 @@ async function handleNaturalFillExtract(request, context) {
       },
     ],
   };
-  if (shouldDisableThinking(config.doubaoBaseUrl, config.doubaoModel)) {
+  if (shouldDisableThinking(llmConfig.baseUrl, llmConfig.model)) {
     doubaoPayload.thinking = { type: "disabled" };
   }
 
   let upstreamResponse;
   const controller = typeof AbortController === "function" ? new AbortController() : null;
-  const timeout = controller ? setTimeout(() => controller.abort(), config.doubaoTimeoutMs) : 0;
+  const timeout = controller ? setTimeout(() => controller.abort(), llmConfig.timeoutMs) : 0;
   try {
-    upstreamResponse = await fetch(`${config.doubaoBaseUrl}/chat/completions`, {
+    upstreamResponse = await fetch(`${llmConfig.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${config.doubaoApiKey}`,
+        "Authorization": `Bearer ${llmConfig.apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(doubaoPayload),

@@ -53,7 +53,7 @@ function sanitizeDownloadFilename(value) {
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
     .trim()
     .slice(0, 120);
-  const filename = text || "鑷姩濉〃鏁版嵁.xlsx";
+  const filename = text || "自动填表数据.xlsx";
   return /\.xlsx$/i.test(filename) ? filename : `${filename}.xlsx`;
 }
 
